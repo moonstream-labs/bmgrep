@@ -1,12 +1,15 @@
 # Build artifacts
 bin/
 dist/
+/bmgrep
 *.exe
 *.out
 *.test
 
 # Local runtime data
 .bmgrep/
+.tmp/
+.tmp*/
 *.db
 *.db-shm
 *.db-wal
