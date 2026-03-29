@@ -1,0 +1,23 @@
+# Build artifacts
+bin/
+dist/
+*.exe
+*.out
+*.test
+
+# Local runtime data
+.bmgrep/
+*.db
+*.db-shm
+*.db-wal
+
+# Coverage and profiling
+coverage.out
+*.coverprofile
+*.pprof
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

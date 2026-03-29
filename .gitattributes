@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Keep markdown and Go files normalized for diffs.
+*.md text eol=lf
+*.go text eol=lf
+*.sql text eol=lf
