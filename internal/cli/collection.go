@@ -3,13 +3,13 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/moonstream-labs/bmgrep/internal/config"
 	"github.com/moonstream-labs/bmgrep/internal/ingest"
+	"github.com/moonstream-labs/bmgrep/internal/paths"
 )
 
 func newCollectionCmd(app *App) *cobra.Command {
@@ -82,7 +82,7 @@ and index all non-ignored .md files.`,
 				return fmt.Errorf("--path is required")
 			}
 
-			root, err := filepath.Abs(flagPath)
+			root, err := paths.ExpandPath(flagPath)
 			if err != nil {
 				return fmt.Errorf("resolve --path: %w", err)
 			}

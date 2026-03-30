@@ -532,15 +532,18 @@ func (s *Store) TermIDFWeights(collectionID int64, terms []string) (map[string]f
 
 	termClause := placeholders(len(terms))
 	query := fmt.Sprintf(`
-		SELECT term, COUNT(DISTINCT doc)
-		FROM docs_vocab
-		WHERE term IN (%s)
-		GROUP BY term
+		SELECT v.term, COUNT(DISTINCT v.doc)
+		FROM docs_vocab v
+		JOIN documents d ON d.id = v.doc
+		WHERE d.collection_id = ?
+		  AND v.term IN (%s)
+		GROUP BY v.term
 	`, termClause)
 
-	args := make([]any, len(terms))
-	for i, t := range terms {
-		args[i] = t
+	args := make([]any, 0, len(terms)+1)
+	args = append(args, collectionID)
+	for _, t := range terms {
+		args = append(args, t)
 	}
 
 	rows, err := s.db.Query(query, args...)

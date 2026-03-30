@@ -38,10 +38,14 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 		termWeights[i] = weights[term]
 	}
 
-	// lineTermCounts[lineIdx][termIdx] is the number of occurrences for that term
-	// within the line. We also keep a weighted total per line for fast scoring.
-	lineTermCounts := make([][]int, len(lines))
+	// lineScores captures weighted token density per line for fast window scores.
 	lineScores := make([]float64, len(lines))
+	// termPrefix[termIdx][lineIdx] stores prefix sums of per-line term hits,
+	// allowing O(len(terms)) coverage checks for any candidate window.
+	termPrefix := make([][]int, len(terms))
+	for i := range termPrefix {
+		termPrefix[i] = make([]int, len(lines)+1)
+	}
 
 	for i, line := range lines {
 		counts := make([]int, len(terms))
@@ -53,7 +57,9 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 			counts[idx]++
 			lineScores[i] += termWeights[idx]
 		}
-		lineTermCounts[i] = counts
+		for termIdx := range terms {
+			termPrefix[termIdx][i+1] = termPrefix[termIdx][i] + counts[termIdx]
+		}
 	}
 
 	// Prefix sums for weighted scores across lines.
@@ -71,23 +77,15 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 		}
 
 		coverage := 0
-		for term := range terms {
-			hits := 0
-			for i := start; i < end; i++ {
-				hits += lineTermCounts[i][term]
-			}
-			if hits > 0 {
+		for termIdx := range terms {
+			if termPrefix[termIdx][end]-termPrefix[termIdx][start] > 0 {
 				coverage++
 			}
 		}
 
-		windowLines := make([]string, linesPerWindow)
-		copy(windowLines, lines[start:end])
-
 		candidates = append(candidates, SampleWindow{
 			StartLine: start + 1,
 			EndLine:   end,
-			Lines:     windowLines,
 			Score:     score,
 			Coverage:  coverage,
 		})
@@ -123,6 +121,14 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 	sort.SliceStable(selected, func(i, j int) bool {
 		return selected[i].StartLine < selected[j].StartLine
 	})
+
+	for i := range selected {
+		start := selected[i].StartLine - 1
+		end := selected[i].EndLine
+		windowLines := make([]string, end-start)
+		copy(windowLines, lines[start:end])
+		selected[i].Lines = windowLines
+	}
 
 	return selected
 }
