@@ -78,7 +78,7 @@ func newCollectionCreateCmd(app *App) *cobra.Command {
 		Use:   "create <name>",
 		Short: "Create and index a new collection",
 		Long: `Create a collection with an initial directory source at --path,
-ensure .bmgrepignore exists, and index all non-ignored .md files.`,
+ensure .bmignore exists, and index all non-ignored .md files.`,
 		Example: strings.TrimSpace(`
   bmgrep collection create docs --path /home/user/reference/docs
 `),
@@ -117,7 +117,7 @@ ensure .bmgrepignore exists, and index all non-ignored .md files.`,
 
 			fmt.Printf("Created collection %q\n", collection.Name)
 			fmt.Printf("root: %s\n", collection.RootPath)
-			fmt.Printf("ignore: %s\n", collection.IgnoreFilePath)
+			fmt.Printf("ignore: %s\n", ingest.DirectoryIgnoreFilePath(collection.RootPath))
 			fmt.Printf("indexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 
 			if _, err := app.Store.GetDefaultCollection(); err != nil {
@@ -242,7 +242,9 @@ Exactly one of --dir or --file is required.`,
 
 			fmt.Printf("Added %s source to collection %q\n", source.SourceType, collection.Name)
 			fmt.Printf("source[%d]: %s\n", source.ID, source.SourcePath)
-			if strings.TrimSpace(source.IgnoreFilePath) != "" {
+			if source.SourceType == store.SourceTypeDirectory {
+				fmt.Printf("ignore: %s\n", ingest.DirectoryIgnoreFilePath(source.SourcePath))
+			} else if strings.TrimSpace(source.IgnoreFilePath) != "" {
 				fmt.Printf("ignore: %s\n", source.IgnoreFilePath)
 			}
 			fmt.Printf("reindexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
@@ -297,7 +299,9 @@ func newCollectionSourcesCmd(app *App) *cobra.Command {
 					state = "disabled"
 				}
 				fmt.Printf("  [%d] %s (%s)\n", source.ID, source.SourcePath, source.SourceType)
-				if source.IgnoreFilePath != "" {
+				if source.SourceType == store.SourceTypeDirectory {
+					fmt.Printf("       ignore: %s\n", ingest.DirectoryIgnoreFilePath(source.SourcePath))
+				} else if source.IgnoreFilePath != "" {
 					fmt.Printf("       ignore: %s\n", source.IgnoreFilePath)
 				}
 				fmt.Printf("       state: %s\n", state)

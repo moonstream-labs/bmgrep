@@ -158,7 +158,8 @@ func scanCollectionSources(s *store.Store, c store.Collection) ([]FileInfo, erro
 
 		switch source.SourceType {
 		case store.SourceTypeDirectory:
-			dirFiles, err := ScanMarkdownFiles(source.SourcePath, source.IgnoreFilePath)
+			ignorePath := DirectoryIgnoreFilePath(source.SourcePath)
+			dirFiles, err := ScanMarkdownFiles(source.SourcePath, ignorePath)
 			if err != nil {
 				if isSourceMissing(err) {
 					continue

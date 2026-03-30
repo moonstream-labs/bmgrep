@@ -72,6 +72,63 @@ func TestReconcileCollectionLifecycle(t *testing.T) {
 	}
 }
 
+func TestReconcileUsesCanonicalDirectoryIgnorePath(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "bmgrep.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := filepath.Join(tempDir, "docs")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "keep.md"), []byte("keep token\n"), 0o644); err != nil {
+		t.Fatalf("write keep.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "drop.md"), []byte("drop token\n"), 0o644); err != nil {
+		t.Fatalf("write drop.md: %v", err)
+	}
+
+	ignorePath, err := EnsureIgnoreFile(root)
+	if err != nil {
+		t.Fatalf("ensure canonical ignore file: %v", err)
+	}
+	if err := AppendIgnorePatterns(ignorePath, []string{"drop.md"}); err != nil {
+		t.Fatalf("append ignore pattern: %v", err)
+	}
+
+	// Intentionally persist a non-canonical ignore path to prove runtime
+	// scanning derives <source>/.bmignore from source root.
+	collection, err := s.CreateCollection("docs", root, filepath.Join(root, "ignored-by-runtime"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	stats, err := ReconcileCollection(s, collection)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if stats.Added != 1 {
+		t.Fatalf("expected only non-ignored file to be indexed, got %+v", stats)
+	}
+
+	if _, total, err := s.SearchRankedDocs(collection.ID, "keep", 5); err != nil {
+		t.Fatalf("search keep: %v", err)
+	} else if total != 1 {
+		t.Fatalf("expected keep match total 1, got %d", total)
+	}
+	if _, total, err := s.SearchRankedDocs(collection.ID, "drop", 5); err != nil {
+		t.Fatalf("search drop: %v", err)
+	} else if total != 0 {
+		t.Fatalf("expected drop match total 0, got %d", total)
+	}
+}
+
 func TestReconcileDetectsContentUpdate(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "bmgrep.db")

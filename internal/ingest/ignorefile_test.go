@@ -7,7 +7,7 @@ import (
 )
 
 func TestReadIgnorePatternsEmpty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".bmgrepignore")
+	path := filepath.Join(t.TempDir(), ".bmignore")
 	if err := os.WriteFile(path, []byte("# comment only\n\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestReadIgnorePatternsEmpty(t *testing.T) {
 }
 
 func TestReadIgnorePatternsMixed(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".bmgrepignore")
+	path := filepath.Join(t.TempDir(), ".bmignore")
 	content := "# comment\narchive/**\n\n# another comment\n**/draft-*.md\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestReadIgnorePatternsMixed(t *testing.T) {
 }
 
 func TestAppendIgnorePatterns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".bmgrepignore")
+	path := filepath.Join(t.TempDir(), ".bmignore")
 	if err := os.WriteFile(path, []byte("# header\nexisting\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestAppendIgnorePatterns(t *testing.T) {
 }
 
 func TestRemoveIgnorePatterns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".bmgrepignore")
+	path := filepath.Join(t.TempDir(), ".bmignore")
 	content := "# header\nkeep-me\nremove-me\nalso-keep\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestRemoveIgnorePatterns(t *testing.T) {
 }
 
 func TestRemoveIgnorePatternsPreservesComments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".bmgrepignore")
+	path := filepath.Join(t.TempDir(), ".bmignore")
 	content := "# important comment\npattern\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)

@@ -18,7 +18,7 @@ func TestCreateCollectionEnsuresCollectionSearchIndex(t *testing.T) {
 	defer s.Close()
 
 	root := t.TempDir()
-	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmgrepignore"))
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -57,11 +57,11 @@ func TestDefaultCollectionLifecycle(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	c1, err := s.CreateCollection("docs-a", filepath.Join(root, "docs-a"), filepath.Join(root, "docs-a", ".bmgrepignore"))
+	c1, err := s.CreateCollection("docs-a", filepath.Join(root, "docs-a"), filepath.Join(root, "docs-a", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create docs-a: %v", err)
 	}
-	c2, err := s.CreateCollection("docs-b", filepath.Join(root, "docs-b"), filepath.Join(root, "docs-b", ".bmgrepignore"))
+	c2, err := s.CreateCollection("docs-b", filepath.Join(root, "docs-b"), filepath.Join(root, "docs-b", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create docs-b: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestCollectionSourceLifecycle(t *testing.T) {
 
 	root := t.TempDir()
 	baseRoot := filepath.Join(root, "docs")
-	c, err := s.CreateCollection("docs", baseRoot, filepath.Join(baseRoot, ".bmgrepignore"))
+	c, err := s.CreateCollection("docs", baseRoot, filepath.Join(baseRoot, ".bmignore"))
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestCollectionSourceLifecycle(t *testing.T) {
 	}
 
 	dirSourcePath := filepath.Join(root, "extra")
-	dirSource, err := s.AddCollectionSource(c.ID, SourceTypeDirectory, dirSourcePath, filepath.Join(dirSourcePath, ".bmgrepignore"))
+	dirSource, err := s.AddCollectionSource(c.ID, SourceTypeDirectory, dirSourcePath, filepath.Join(dirSourcePath, ".bmignore"))
 	if err != nil {
 		t.Fatalf("AddCollectionSource dir: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestUpsertAllowsDuplicateRelPathsPerCollection(t *testing.T) {
 	defer s.Close()
 
 	root := t.TempDir()
-	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmgrepignore"))
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -253,11 +253,11 @@ func TestRebuildCollectionSearchIndexBackfillsOnlyCollectionDocs(t *testing.T) {
 	defer s.Close()
 
 	root := t.TempDir()
-	c1, err := s.CreateCollection("c1", filepath.Join(root, "c1"), filepath.Join(root, "c1", ".bmgrepignore"))
+	c1, err := s.CreateCollection("c1", filepath.Join(root, "c1"), filepath.Join(root, "c1", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create c1: %v", err)
 	}
-	c2, err := s.CreateCollection("c2", filepath.Join(root, "c2"), filepath.Join(root, "c2", ".bmgrepignore"))
+	c2, err := s.CreateCollection("c2", filepath.Join(root, "c2"), filepath.Join(root, "c2", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create c2: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestDropCollectionSearchIndexRemovesShardTables(t *testing.T) {
 	defer s.Close()
 
 	root := t.TempDir()
-	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmgrepignore"))
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestOpenMigratesAndDropsLegacyGlobalFTSArtifacts(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmgrepignore"))
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
@@ -471,11 +471,11 @@ func TestTermIDFWeightsScopedToCollection(t *testing.T) {
 	defer s.Close()
 
 	root := t.TempDir()
-	c1, err := s.CreateCollection("c1", filepath.Join(root, "c1"), filepath.Join(root, "c1", ".bmgrepignore"))
+	c1, err := s.CreateCollection("c1", filepath.Join(root, "c1"), filepath.Join(root, "c1", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create c1: %v", err)
 	}
-	c2, err := s.CreateCollection("c2", filepath.Join(root, "c2"), filepath.Join(root, "c2", ".bmgrepignore"))
+	c2, err := s.CreateCollection("c2", filepath.Join(root, "c2"), filepath.Join(root, "c2", ".bmignore"))
 	if err != nil {
 		t.Fatalf("create c2: %v", err)
 	}

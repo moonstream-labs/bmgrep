@@ -12,9 +12,9 @@ import (
 func newIgnoreCmd(app *App) *cobra.Command {
 	ignoreCmd := &cobra.Command{
 		Use:   "ignore",
-		Short: "Manage .bmgrepignore patterns for the active collection",
+		Short: "Manage .bmignore patterns for the active collection",
 		Long: `Ignore patterns use .gitignore-style syntax and are stored in the
-active collection's primary directory source .bmgrepignore file.
+active collection's primary directory source .bmignore file.
 
 Active collection resolution:
   BMGREP_COLLECTION -> persistent default collection in the database.`,
@@ -46,15 +46,12 @@ func newIgnoreListCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source, err := app.Store.PrimaryDirectorySource(collection.ID)
+			ignorePath, err := activeIgnoreFilePath(app, collection.ID)
 			if err != nil {
 				return err
 			}
-			if _, err := ingest.EnsureIgnoreFile(source.SourcePath); err != nil {
-				return err
-			}
 
-			patterns, err := ingest.ReadIgnorePatterns(source.IgnoreFilePath)
+			patterns, err := ingest.ReadIgnorePatterns(ignorePath)
 			if err != nil {
 				return err
 			}
@@ -74,7 +71,7 @@ func newIgnoreListCmd(app *App) *cobra.Command {
 func newIgnorePathCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "path",
-		Short: "Print the active .bmgrepignore path",
+		Short: "Print the active .bmignore path",
 		Example: strings.TrimSpace(`
   bmgrep ignore path
 `),
@@ -83,14 +80,11 @@ func newIgnorePathCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source, err := app.Store.PrimaryDirectorySource(collection.ID)
+			ignorePath, err := activeIgnoreFilePath(app, collection.ID)
 			if err != nil {
 				return err
 			}
-			if _, err := ingest.EnsureIgnoreFile(source.SourcePath); err != nil {
-				return err
-			}
-			fmt.Println(source.IgnoreFilePath)
+			fmt.Println(ignorePath)
 			return nil
 		},
 	}
@@ -125,15 +119,12 @@ func newIgnoreRemoveCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source, err := app.Store.PrimaryDirectorySource(collection.ID)
+			ignorePath, err := activeIgnoreFilePath(app, collection.ID)
 			if err != nil {
 				return err
 			}
-			if _, err := ingest.EnsureIgnoreFile(source.SourcePath); err != nil {
-				return err
-			}
 
-			if err := ingest.RemoveIgnorePatterns(source.IgnoreFilePath, args); err != nil {
+			if err := ingest.RemoveIgnorePatterns(ignorePath, args); err != nil {
 				return err
 			}
 
@@ -154,15 +145,12 @@ func addIgnorePatterns(app *App, patterns []string) error {
 	if err != nil {
 		return err
 	}
-	source, err := app.Store.PrimaryDirectorySource(collection.ID)
+	ignorePath, err := activeIgnoreFilePath(app, collection.ID)
 	if err != nil {
 		return err
 	}
-	if _, err := ingest.EnsureIgnoreFile(source.SourcePath); err != nil {
-		return err
-	}
 
-	if err := ingest.AppendIgnorePatterns(source.IgnoreFilePath, patterns); err != nil {
+	if err := ingest.AppendIgnorePatterns(ignorePath, patterns); err != nil {
 		return err
 	}
 
@@ -174,4 +162,16 @@ func addIgnorePatterns(app *App, patterns []string) error {
 	fmt.Printf("Added %d pattern(s)\n", len(patterns))
 	fmt.Printf("reindexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 	return nil
+}
+
+func activeIgnoreFilePath(app *App, collectionID int64) (string, error) {
+	source, err := app.Store.PrimaryDirectorySource(collectionID)
+	if err != nil {
+		return "", err
+	}
+	ignorePath, err := ingest.EnsureIgnoreFile(source.SourcePath)
+	if err != nil {
+		return "", err
+	}
+	return ignorePath, nil
 }

@@ -259,7 +259,7 @@ bmgrep --db /tmp/test.db db current
 
 ## Ignore patterns
 
-Each directory source has a `.bmgrepignore` file using `.gitignore`-style syntax. Ignored files are excluded from indexing and removed during reconciliation. The `bmgrep ignore ...` commands operate on the **primary directory source** of the active collection (`BMGREP_COLLECTION` override or persistent default).
+Each directory source has a `.bmignore` file using `.gitignore`-style syntax. Ignored files are excluded from indexing and removed during reconciliation. The `bmgrep ignore ...` commands operate on the **primary directory source** of the active collection (`BMGREP_COLLECTION` override or persistent default).
 
 ```bash
 # List current patterns
@@ -282,7 +282,7 @@ bmgrep ignore path
 When a collection is reconciled (on create and before search), bmgrep:
 
 1. Scans all enabled sources in the active collection (directory sources recursively, file sources directly).
-2. Applies `.bmgrepignore` patterns per directory source to filter candidates.
+2. Applies `.bmignore` patterns per directory source to filter candidates.
 3. Reads each file, computing SHA-256 hash and metadata (mtime, size, line count).
 4. Cleans the Markdown for FTS5 indexing (see below).
 5. Inserts both raw content (for excerpt display) and cleaned content (for ranking) into SQLite.
@@ -351,7 +351,7 @@ Every token in bmgrep output maps to a concrete agent decision or tool call. Lin
 |---|---|---|
 | Database | `~/.local/share/bmgrep/bmgrep.db` | `--db` flag, `$BMGREP_DB`, or `$XDG_DATA_HOME` |
 | Workspace state | `<workspace>/.bmgrep/` | nearest ancestor workspace directory |
-| Ignore file | `<directory_source>/.bmgrepignore` | managed per source (created automatically for added dirs) |
+| Ignore file | `<directory_source>/.bmignore` | managed per source (created automatically for added dirs) |
 
 ## Development
 

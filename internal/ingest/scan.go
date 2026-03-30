@@ -10,7 +10,13 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
-const IgnoreFileName = ".bmgrepignore"
+const IgnoreFileName = ".bmignore"
+
+// DirectoryIgnoreFilePath returns the canonical ignore file path
+// for a directory source root.
+func DirectoryIgnoreFilePath(rootPath string) string {
+	return filepath.Join(rootPath, IgnoreFileName)
+}
 
 // FileInfo represents one filesystem file candidate for indexing.
 type FileInfo struct {
@@ -34,9 +40,9 @@ func ResolveSourcePath(path string) (string, error) {
 	return abs, nil
 }
 
-// EnsureIgnoreFile creates .bmgrepignore if it does not already exist.
+// EnsureIgnoreFile creates .bmignore if it does not already exist.
 func EnsureIgnoreFile(rootPath string) (string, error) {
-	path := filepath.Join(rootPath, IgnoreFileName)
+	path := DirectoryIgnoreFilePath(rootPath)
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
 	} else if !os.IsNotExist(err) {
