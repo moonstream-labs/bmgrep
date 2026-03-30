@@ -24,3 +24,9 @@ coverage.out
 Thumbs.db
 *.swp
 *.swo
+
+# Project directories
+# reference/: External documentation and reference materials
+reference/
+# test-collection/: Local test data and fixtures
+test-collection/
