@@ -13,6 +13,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const (
+	collectionFTSTablePrefix   = "docs_fts_c"
+	collectionVocabTablePrefix = "docs_vocab_c"
+)
+
 // Store wraps a SQLite handle and exposes typed operations.
 type Store struct {
 	db *sql.DB
@@ -129,23 +134,6 @@ func (s *Store) ensureSchema() error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_collection_path ON documents(collection_id, path);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_collection_rel_path ON documents(collection_id, rel_path);`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_collection_id ON documents(collection_id);`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-			clean_content,
-			content='documents',
-			content_rowid='id',
-			tokenize='unicode61'
-		);`,
-		`CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-			INSERT INTO docs_fts(rowid, clean_content) VALUES (new.id, new.clean_content);
-		END;`,
-		`CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
-			INSERT INTO docs_fts(docs_fts, rowid, clean_content) VALUES('delete', old.id, old.clean_content);
-		END;`,
-		`CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-			INSERT INTO docs_fts(docs_fts, rowid, clean_content) VALUES('delete', old.id, old.clean_content);
-			INSERT INTO docs_fts(rowid, clean_content) VALUES (new.id, new.clean_content);
-		END;`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS docs_vocab USING fts5vocab(docs_fts, 'instance');`,
 	}
 
 	for _, stmt := range schema {
@@ -154,28 +142,265 @@ func (s *Store) ensureSchema() error {
 		}
 	}
 
+	if err := s.migrateLegacyGlobalFTS(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Store) migrateLegacyGlobalFTS() error {
+	legacy, err := s.hasLegacyGlobalFTSArtifacts()
+	if err != nil {
+		return err
+	}
+	if !legacy {
+		return nil
+	}
+
+	return s.RunInTransaction(func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT id FROM collections ORDER BY id ASC`)
+		if err != nil {
+			return fmt.Errorf("list collections for legacy fts migration: %w", err)
+		}
+		defer rows.Close()
+
+		var collectionIDs []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("scan collection id for legacy fts migration: %w", err)
+			}
+			collectionIDs = append(collectionIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate collection ids for legacy fts migration: %w", err)
+		}
+
+		for _, id := range collectionIDs {
+			if err := s.RebuildCollectionSearchIndexTx(tx, id); err != nil {
+				return fmt.Errorf("rebuild collection index during legacy fts migration: %w", err)
+			}
+		}
+
+		dropStatements := []string{
+			`DROP TRIGGER IF EXISTS documents_ai;`,
+			`DROP TRIGGER IF EXISTS documents_ad;`,
+			`DROP TRIGGER IF EXISTS documents_au;`,
+			`DROP TABLE IF EXISTS docs_vocab;`,
+			`DROP TABLE IF EXISTS docs_fts;`,
+		}
+		for _, stmt := range dropStatements {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("drop legacy fts artifact: %w", err)
+			}
+		}
+
+		return nil
+	})
+}
+
+func (s *Store) hasLegacyGlobalFTSArtifacts() (bool, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE (type = 'table' AND name IN ('docs_fts', 'docs_vocab'))
+		   OR (type = 'trigger' AND name IN ('documents_ai', 'documents_ad', 'documents_au'))
+	`).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check legacy fts artifacts: %w", err)
+	}
+	return count > 0, nil
+}
+
+func collectionFTSTableName(collectionID int64) (string, error) {
+	if collectionID <= 0 {
+		return "", fmt.Errorf("invalid collection id %d", collectionID)
+	}
+	return fmt.Sprintf("%s%d", collectionFTSTablePrefix, collectionID), nil
+}
+
+func collectionVocabTableName(collectionID int64) (string, error) {
+	if collectionID <= 0 {
+		return "", fmt.Errorf("invalid collection id %d", collectionID)
+	}
+	return fmt.Sprintf("%s%d", collectionVocabTablePrefix, collectionID), nil
+}
+
+func quoteIdent(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("empty SQL identifier")
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		isLetter := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+		isDigit := ch >= '0' && ch <= '9'
+		if !isLetter && !isDigit && ch != '_' {
+			return "", fmt.Errorf("invalid SQL identifier %q", name)
+		}
+		if i == 0 && isDigit {
+			return "", fmt.Errorf("invalid SQL identifier %q", name)
+		}
+	}
+	return `"` + name + `"`, nil
+}
+
+func collectionSearchIndexIdents(collectionID int64) (string, string, string, string, error) {
+	ftsName, err := collectionFTSTableName(collectionID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	vocabName, err := collectionVocabTableName(collectionID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	ftsIdent, err := quoteIdent(ftsName)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	vocabIdent, err := quoteIdent(vocabName)
+	if err != nil {
+		return "", "", "", "", err
+	}
+
+	return ftsName, ftsIdent, vocabName, vocabIdent, nil
+}
+
+// CollectionSearchIndexExists reports whether the collection-local FTS table exists.
+func (s *Store) CollectionSearchIndexExists(collectionID int64) (bool, error) {
+	ftsName, err := collectionFTSTableName(collectionID)
+	if err != nil {
+		return false, err
+	}
+
+	var exists int
+	err = s.db.QueryRow(`
+		SELECT 1
+		FROM sqlite_master
+		WHERE type = 'table'
+		  AND name = ?
+		LIMIT 1
+	`, ftsName).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check collection index existence: %w", err)
+	}
+
+	return true, nil
+}
+
+// EnsureCollectionSearchIndexTx creates collection-local FTS and vocab tables.
+func (s *Store) EnsureCollectionSearchIndexTx(tx *sql.Tx, collectionID int64) error {
+	_, ftsIdent, _, vocabIdent, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return err
+	}
+
+	createFTS := fmt.Sprintf(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS %s USING fts5(
+			clean_content,
+			tokenize='unicode61'
+		)
+	`, ftsIdent)
+	if _, err := tx.Exec(createFTS); err != nil {
+		return fmt.Errorf("create collection fts index: %w", err)
+	}
+
+	createVocab := fmt.Sprintf(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS %s USING fts5vocab(%s, 'instance')
+	`, vocabIdent, ftsIdent)
+	if _, err := tx.Exec(createVocab); err != nil {
+		return fmt.Errorf("create collection vocab index: %w", err)
+	}
+
+	return nil
+}
+
+// RebuildCollectionSearchIndexTx fully rebuilds collection-local FTS content
+// from the canonical documents table.
+func (s *Store) RebuildCollectionSearchIndexTx(tx *sql.Tx, collectionID int64) error {
+	_, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return err
+	}
+
+	if err := s.EnsureCollectionSearchIndexTx(tx, collectionID); err != nil {
+		return err
+	}
+
+	clearStmt := fmt.Sprintf(`DELETE FROM %s`, ftsIdent)
+	if _, err := tx.Exec(clearStmt); err != nil {
+		return fmt.Errorf("clear collection fts index: %w", err)
+	}
+
+	rebuildStmt := fmt.Sprintf(`
+		INSERT INTO %s(rowid, clean_content)
+		SELECT id, clean_content
+		FROM documents
+		WHERE collection_id = ?
+	`, ftsIdent)
+	if _, err := tx.Exec(rebuildStmt, collectionID); err != nil {
+		return fmt.Errorf("rebuild collection fts index: %w", err)
+	}
+
+	return nil
+}
+
+// DropCollectionSearchIndexTx deletes collection-local FTS and vocab tables.
+func (s *Store) DropCollectionSearchIndexTx(tx *sql.Tx, collectionID int64) error {
+	_, ftsIdent, _, vocabIdent, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return err
+	}
+
+	dropVocab := fmt.Sprintf(`DROP TABLE IF EXISTS %s`, vocabIdent)
+	if _, err := tx.Exec(dropVocab); err != nil {
+		return fmt.Errorf("drop collection vocab index: %w", err)
+	}
+
+	dropFTS := fmt.Sprintf(`DROP TABLE IF EXISTS %s`, ftsIdent)
+	if _, err := tx.Exec(dropFTS); err != nil {
+		return fmt.Errorf("drop collection fts index: %w", err)
+	}
+
 	return nil
 }
 
 // CreateCollection inserts a named collection rooted at rootPath.
 func (s *Store) CreateCollection(name, rootPath, ignoreFilePath string) (Collection, error) {
-	result, err := s.db.Exec(
-		`INSERT INTO collections(name, root_path, ignore_file_path) VALUES(?, ?, ?)`,
-		name, rootPath, ignoreFilePath,
-	)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return Collection{}, fmt.Errorf("collection %q already exists", name)
+	var out Collection
+	err := s.RunInTransaction(func(tx *sql.Tx) error {
+		result, err := tx.Exec(
+			`INSERT INTO collections(name, root_path, ignore_file_path) VALUES(?, ?, ?)`,
+			name, rootPath, ignoreFilePath,
+		)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+				return fmt.Errorf("collection %q already exists", name)
+			}
+			return fmt.Errorf("create collection: %w", err)
 		}
-		return Collection{}, fmt.Errorf("create collection: %w", err)
-	}
 
-	id, err := result.LastInsertId()
+		id, err := result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("read created collection id: %w", err)
+		}
+
+		if err := s.EnsureCollectionSearchIndexTx(tx, id); err != nil {
+			return err
+		}
+
+		out = Collection{ID: id, Name: name, RootPath: rootPath, IgnoreFilePath: ignoreFilePath}
+		return nil
+	})
 	if err != nil {
-		return Collection{}, fmt.Errorf("read created collection id: %w", err)
+		return Collection{}, err
 	}
 
-	return Collection{ID: id, Name: name, RootPath: rootPath, IgnoreFilePath: ignoreFilePath}, nil
+	return out, nil
 }
 
 // ListCollections returns all collections with current document counts.
@@ -242,18 +467,30 @@ func (s *Store) RenameCollection(oldName, newName string) error {
 
 // DeleteCollection removes the collection and all associated documents.
 func (s *Store) DeleteCollection(name string) error {
-	res, err := s.db.Exec(`DELETE FROM collections WHERE name = ?`, name)
-	if err != nil {
-		return fmt.Errorf("delete collection: %w", err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read delete rows affected: %w", err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("collection %q not found", name)
-	}
-	return nil
+	return s.RunInTransaction(func(tx *sql.Tx) error {
+		var id int64
+		err := tx.QueryRow(`SELECT id FROM collections WHERE name = ?`, name).Scan(&id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("collection %q not found", name)
+			}
+			return fmt.Errorf("resolve collection for delete: %w", err)
+		}
+
+		res, err := tx.Exec(`DELETE FROM collections WHERE name = ?`, name)
+		if err != nil {
+			return fmt.Errorf("delete collection: %w", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read delete rows affected: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("collection %q not found", name)
+		}
+
+		return s.DropCollectionSearchIndexTx(tx, id)
+	})
 }
 
 // ListDocumentsForCollection returns existing docs keyed by absolute path.
@@ -364,15 +601,22 @@ func (s *Store) SearchRankedDocs(collectionID int64, ftsQuery string, limit int)
 		return nil, 0, nil
 	}
 
-	rows, err := s.db.Query(`
+	_, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	query := fmt.Sprintf(`
 		SELECT d.id, d.path, d.line_count
-		FROM docs_fts
-		JOIN documents d ON d.id = docs_fts.rowid
+		FROM %s
+		JOIN documents d ON d.id = %s.rowid
 		WHERE d.collection_id = ?
-		  AND docs_fts MATCH ?
-		ORDER BY bm25(docs_fts) ASC
+		  AND %s MATCH ?
+		ORDER BY bm25(%s) ASC
 		LIMIT ?
-	`, collectionID, ftsQuery, limit)
+	`, ftsIdent, ftsIdent, ftsIdent, ftsIdent)
+
+	rows, err := s.db.Query(query, collectionID, ftsQuery, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("run ranked search: %w", err)
 	}
@@ -392,7 +636,7 @@ func (s *Store) SearchRankedDocs(collectionID int64, ftsQuery string, limit int)
 		return nil, 0, fmt.Errorf("iterate ranked docs: %w", err)
 	}
 
-	hits, err := s.termHitCounts(ids, ftsQuery)
+	hits, err := s.termHitCounts(collectionID, ids, ftsQuery)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -413,15 +657,22 @@ func (s *Store) SearchSampleDocs(collectionID int64, ftsQuery string, limit int)
 		return nil, 0, nil
 	}
 
-	rows, err := s.db.Query(`
+	_, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	query := fmt.Sprintf(`
 		SELECT d.id, d.path, d.line_count, d.raw_content
-		FROM docs_fts
-		JOIN documents d ON d.id = docs_fts.rowid
+		FROM %s
+		JOIN documents d ON d.id = %s.rowid
 		WHERE d.collection_id = ?
-		  AND docs_fts MATCH ?
-		ORDER BY bm25(docs_fts) ASC
+		  AND %s MATCH ?
+		ORDER BY bm25(%s) ASC
 		LIMIT ?
-	`, collectionID, ftsQuery, limit)
+	`, ftsIdent, ftsIdent, ftsIdent, ftsIdent)
+
+	rows, err := s.db.Query(query, collectionID, ftsQuery, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("run sample search: %w", err)
 	}
@@ -443,14 +694,21 @@ func (s *Store) SearchSampleDocs(collectionID int64, ftsQuery string, limit int)
 }
 
 func (s *Store) countMatches(collectionID int64, ftsQuery string) (int, error) {
-	var total int
-	err := s.db.QueryRow(`
+	_, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return 0, err
+	}
+
+	query := fmt.Sprintf(`
 		SELECT COUNT(*)
-		FROM docs_fts
-		JOIN documents d ON d.id = docs_fts.rowid
+		FROM %s
+		JOIN documents d ON d.id = %s.rowid
 		WHERE d.collection_id = ?
-		  AND docs_fts MATCH ?
-	`, collectionID, ftsQuery).Scan(&total)
+		  AND %s MATCH ?
+	`, ftsIdent, ftsIdent, ftsIdent)
+
+	var total int
+	err = s.db.QueryRow(query, collectionID, ftsQuery).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("count matching documents: %w", err)
 	}
@@ -459,7 +717,7 @@ func (s *Store) countMatches(collectionID int64, ftsQuery string) (int, error) {
 
 // termHitCounts returns total token hits by document for query terms.
 // The query is split by spaces because bmgrep normalizes it to plain terms.
-func (s *Store) termHitCounts(docIDs []int64, normalizedQuery string) (map[int64]int, error) {
+func (s *Store) termHitCounts(collectionID int64, docIDs []int64, normalizedQuery string) (map[int64]int, error) {
 	out := make(map[int64]int)
 	if len(docIDs) == 0 {
 		return out, nil
@@ -473,13 +731,18 @@ func (s *Store) termHitCounts(docIDs []int64, normalizedQuery string) (map[int64
 	docClause := placeholders(len(docIDs))
 	termClause := placeholders(len(terms))
 
+	_, _, _, vocabIdent, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return nil, err
+	}
+
 	query := fmt.Sprintf(`
 		SELECT doc, COUNT(*)
-		FROM docs_vocab
+		FROM %s
 		WHERE doc IN (%s)
 		  AND term IN (%s)
 		GROUP BY doc
-	`, docClause, termClause)
+	`, vocabIdent, docClause, termClause)
 
 	args := make([]any, 0, len(docIDs)+len(terms))
 	for _, id := range docIDs {
@@ -530,18 +793,20 @@ func (s *Store) TermIDFWeights(collectionID int64, terms []string) (map[string]f
 		return weights, nil
 	}
 
+	_, _, _, vocabIdent, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return nil, err
+	}
+
 	termClause := placeholders(len(terms))
 	query := fmt.Sprintf(`
-		SELECT v.term, COUNT(DISTINCT v.doc)
-		FROM docs_vocab v
-		JOIN documents d ON d.id = v.doc
-		WHERE d.collection_id = ?
-		  AND v.term IN (%s)
-		GROUP BY v.term
-	`, termClause)
+		SELECT term, COUNT(DISTINCT doc)
+		FROM %s
+		WHERE term IN (%s)
+		GROUP BY term
+	`, vocabIdent, termClause)
 
-	args := make([]any, 0, len(terms)+1)
-	args = append(args, collectionID)
+	args := make([]any, 0, len(terms))
 	for _, t := range terms {
 		args = append(args, t)
 	}

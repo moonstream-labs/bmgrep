@@ -1,8 +1,10 @@
 package ingest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -186,5 +188,88 @@ func TestReconcileSampleLineNumberFidelity(t *testing.T) {
 	}
 	if lines[2] != "alpha target" {
 		t.Fatalf("line 3 mismatch: got %q, want %q", lines[2], "alpha target")
+	}
+}
+
+func TestReconcileCrossCollectionBM25Isolation(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "bmgrep.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	rootA := filepath.Join(tempDir, "docs-a")
+	rootB := filepath.Join(tempDir, "docs-b")
+	if err := os.MkdirAll(rootA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	a1 := filepath.Join(rootA, "a1.md")
+	a2 := filepath.Join(rootA, "a2.md")
+	if err := os.WriteFile(a1, []byte("alpha alpha alpha alpha beta gamma delta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a2, []byte("alpha beta beta beta beta beta beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ignoreA, _ := EnsureIgnoreFile(rootA)
+	ignoreB, _ := EnsureIgnoreFile(rootB)
+	collectionA, err := s.CreateCollection("docs-a", rootA, ignoreA)
+	if err != nil {
+		t.Fatalf("create collection A: %v", err)
+	}
+	collectionB, err := s.CreateCollection("docs-b", rootB, ignoreB)
+	if err != nil {
+		t.Fatalf("create collection B: %v", err)
+	}
+
+	if _, err := ReconcileCollection(s, collectionA); err != nil {
+		t.Fatalf("reconcile collection A: %v", err)
+	}
+	if _, err := ReconcileCollection(s, collectionB); err != nil {
+		t.Fatalf("reconcile collection B initial: %v", err)
+	}
+
+	baseline, total, err := s.SearchRankedDocs(collectionA.ID, "alpha beta", 2)
+	if err != nil {
+		t.Fatalf("baseline ranked search: %v", err)
+	}
+	if total != 2 || len(baseline) != 2 {
+		t.Fatalf("unexpected baseline results: total=%d len=%d", total, len(baseline))
+	}
+
+	baselinePaths := []string{baseline[0].Path, baseline[1].Path}
+	if baselinePaths[0] != a2 {
+		t.Fatalf("unexpected baseline top result: got %q, want %q", baselinePaths[0], a2)
+	}
+
+	for i := 0; i < 40; i++ {
+		path := filepath.Join(rootB, fmt.Sprintf("beta-%02d.md", i))
+		if err := os.WriteFile(path, []byte("beta\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := ReconcileCollection(s, collectionB); err != nil {
+		t.Fatalf("reconcile collection B with beta-heavy corpus: %v", err)
+	}
+
+	after, total, err := s.SearchRankedDocs(collectionA.ID, "alpha beta", 2)
+	if err != nil {
+		t.Fatalf("post-mutation ranked search: %v", err)
+	}
+	if total != 2 || len(after) != 2 {
+		t.Fatalf("unexpected post-mutation results: total=%d len=%d", total, len(after))
+	}
+
+	afterPaths := []string{after[0].Path, after[1].Path}
+	if !reflect.DeepEqual(afterPaths, baselinePaths) {
+		t.Fatalf("collection A ranking changed after mutating collection B: baseline=%v after=%v", baselinePaths, afterPaths)
 	}
 }

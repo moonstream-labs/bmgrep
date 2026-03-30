@@ -10,7 +10,7 @@ LLM agents operate under constant context-window pressure. When an agent needs t
 
 bmgrep resolves this with a two-stage pipeline:
 
-1. **Document ranking** (BM25 via SQLite FTS5) — identifies which files are most relevant to a query across the entire corpus, using statistical term weighting.
+1. **Document ranking** (BM25 via SQLite FTS5) — identifies which files are most relevant to a query within the active collection corpus, using statistical term weighting.
 2. **Passage extraction** (sliding window by term density) — within each ranked file, locates the most information-dense excerpts using IDF-weighted scoring.
 
 This lets an agent triage a corpus in one tool call, preview specific passages in another, and commit to a full file read only when justified — the most context-efficient workflow possible.
@@ -159,7 +159,7 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 
 ## Collection management
 
-Collections define which directory of Markdown files to index. bmgrep always searches the **default collection**.
+Collections define which directory of Markdown files to index. bmgrep always searches the **default collection**, and BM25/IDF statistics are computed only from that collection's indexed documents.
 
 ```bash
 # Create a collection (first collection auto-becomes default)
@@ -243,7 +243,7 @@ When extracting excerpt windows in sample mode, bmgrep weights each query term b
 IDF(term) = log((N - df + 0.5) / (df + 0.5) + 1)
 ```
 
-Where `N` is total documents and `df` is the number of documents containing the term. This means a window containing a rare, highly discriminating term scores higher than a window with multiple occurrences of a common term — aligning passage ranking with the same statistical principle BM25 uses for document ranking.
+Where `N` is the total number of documents in the active collection and `df` is the number of collection documents containing the term. This means a window containing a rare, highly discriminating term scores higher than a window with multiple occurrences of a common term — aligning passage ranking with the same statistical principle BM25 uses for document ranking.
 
 Windows are selected greedily: the highest-scoring window is chosen first, then any overlapping windows are excluded from consideration, and the process repeats. Final output presents windows in document order.
 

@@ -87,8 +87,18 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 		}
 	}
 
+	indexExists, err := s.CollectionSearchIndexExists(c.ID)
+	if err != nil {
+		return ReconcileStats{}, err
+	}
+	needsIndexRebuild := !indexExists || len(upserts) > 0 || len(toDelete) > 0
+
 	stats := ReconcileStats{}
 	err = s.RunInTransaction(func(tx *sql.Tx) error {
+		if err := s.EnsureCollectionSearchIndexTx(tx, c.ID); err != nil {
+			return err
+		}
+
 		for _, u := range upserts {
 			if err := s.UpsertDocument(tx, u.doc); err != nil {
 				return err
@@ -99,7 +109,16 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 				stats.Updated++
 			}
 		}
-		return s.DeleteDocumentsByPath(tx, c.ID, toDelete)
+
+		if err := s.DeleteDocumentsByPath(tx, c.ID, toDelete); err != nil {
+			return err
+		}
+
+		if needsIndexRebuild {
+			return s.RebuildCollectionSearchIndexTx(tx, c.ID)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return ReconcileStats{}, err
