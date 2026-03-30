@@ -89,3 +89,41 @@ func TestFormatSampleOutputZeroResults(t *testing.T) {
 		t.Fatalf("expected zero results header: %q", out)
 	}
 }
+
+func TestFormatRankOutputWithFallbackAndCoverage(t *testing.T) {
+	out := FormatRankOutputWithOptions(
+		[]store.RankedDoc{{Path: "/tmp/a.md", LineCount: 10, Matches: 3, MatchedTerms: 1}},
+		1,
+		RankOutputOptions{
+			Match:            MatchInfo{AutoFallback: true},
+			ShowTermCoverage: true,
+			QueryTermCount:   2,
+		},
+	)
+
+	if !strings.Contains(out, "match: any-term fallback (auto; no all-term matches)") {
+		t.Fatalf("missing fallback indicator: %q", out)
+	}
+	if !strings.Contains(out, "(10 lines, 3 matches, 1/2 terms)") {
+		t.Fatalf("missing coverage suffix: %q", out)
+	}
+}
+
+func TestFormatSampleOutputWithFallback(t *testing.T) {
+	out := FormatSampleOutputWithOptions(
+		[]SampleResult{{
+			Path: "/tmp/a.md",
+			Windows: []SampleWindow{{
+				StartLine: 1,
+				EndLine:   1,
+				Lines:     []string{"alpha"},
+			}},
+		}},
+		1,
+		SampleOutputOptions{Match: MatchInfo{AutoFallback: true}},
+	)
+
+	if !strings.Contains(out, "match: any-term fallback (auto; no all-term matches)") {
+		t.Fatalf("missing fallback indicator: %q", out)
+	}
+}

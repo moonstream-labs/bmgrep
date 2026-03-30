@@ -64,3 +64,52 @@ func TestNormalizePlainQueryFTSOperatorWords(t *testing.T) {
 		t.Fatalf("unexpected fts query: %q", fts)
 	}
 }
+
+func TestBuildFTSQueryAll(t *testing.T) {
+	got := BuildFTSQuery([]string{"skillsbench", "decomposition"}, MatchAll)
+	if got != "skillsbench decomposition" {
+		t.Fatalf("unexpected all-term query: %q", got)
+	}
+}
+
+func TestBuildFTSQueryAny(t *testing.T) {
+	got := BuildFTSQuery([]string{"skillsbench", "decomposition"}, MatchAny)
+	if got != "skillsbench OR decomposition" {
+		t.Fatalf("unexpected any-term query: %q", got)
+	}
+}
+
+func TestBuildFTSQueryAutoUsesAllSemantics(t *testing.T) {
+	got := BuildFTSQuery([]string{"skillsbench", "decomposition"}, MatchAuto)
+	if got != "skillsbench decomposition" {
+		t.Fatalf("unexpected auto query: %q", got)
+	}
+}
+
+func TestParseMatchMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want MatchMode
+	}{
+		{in: "all", want: MatchAll},
+		{in: "any", want: MatchAny},
+		{in: "auto", want: MatchAuto},
+		{in: "AUTO", want: MatchAuto},
+	}
+
+	for _, tc := range cases {
+		got, err := ParseMatchMode(tc.in)
+		if err != nil {
+			t.Fatalf("ParseMatchMode(%q) returned err: %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("ParseMatchMode(%q): got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestParseMatchModeInvalid(t *testing.T) {
+	if _, err := ParseMatchMode("maybe"); err == nil {
+		t.Fatal("expected invalid mode error")
+	}
+}

@@ -7,15 +7,40 @@ import (
 	"github.com/moonstream-labs/bmgrep/internal/store"
 )
 
+type MatchInfo struct {
+	AutoFallback bool
+}
+
+type RankOutputOptions struct {
+	Match            MatchInfo
+	ShowTermCoverage bool
+	QueryTermCount   int
+}
+
+type SampleOutputOptions struct {
+	Match MatchInfo
+}
+
 // FormatRankOutput renders rank-mode output using the documented contract.
 func FormatRankOutput(docs []store.RankedDoc, total int) string {
+	return FormatRankOutputWithOptions(docs, total, RankOutputOptions{})
+}
+
+// FormatRankOutputWithOptions renders rank-mode output with optional metadata.
+func FormatRankOutputWithOptions(docs []store.RankedDoc, total int, opts RankOutputOptions) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "results: %d of %d\n\n", len(docs), total)
+	writeResultsHeader(&b, len(docs), total, opts.Match.AutoFallback)
 	for i, d := range docs {
-		fmt.Fprintf(&b, "[%d] %s (%s %s, %s %s)\n",
+		coverageSuffix := ""
+		if opts.ShowTermCoverage && opts.QueryTermCount > 0 {
+			coverageSuffix = fmt.Sprintf(", %d/%d %s", d.MatchedTerms, opts.QueryTermCount, pluralize(opts.QueryTermCount, "term", "terms"))
+		}
+
+		fmt.Fprintf(&b, "[%d] %s (%s %s, %s %s%s)\n",
 			i+1, d.Path,
 			commaFormat(d.LineCount), pluralize(d.LineCount, "line", "lines"),
 			commaFormat(d.Matches), pluralize(d.Matches, "match", "matches"),
+			coverageSuffix,
 		)
 	}
 	return b.String()
@@ -58,8 +83,13 @@ type SampleResult struct {
 
 // FormatSampleOutput renders sample-mode output with cat -n style excerpts.
 func FormatSampleOutput(results []SampleResult, total int) string {
+	return FormatSampleOutputWithOptions(results, total, SampleOutputOptions{})
+}
+
+// FormatSampleOutputWithOptions renders sample-mode output with optional metadata.
+func FormatSampleOutputWithOptions(results []SampleResult, total int, opts SampleOutputOptions) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "results: %d of %d\n\n", len(results), total)
+	writeResultsHeader(&b, len(results), total, opts.Match.AutoFallback)
 
 	for i, r := range results {
 		if i > 0 {
@@ -77,4 +107,12 @@ func FormatSampleOutput(results []SampleResult, total int) string {
 	}
 
 	return b.String()
+}
+
+func writeResultsHeader(b *strings.Builder, shown, total int, autoFallback bool) {
+	fmt.Fprintf(b, "results: %d of %d\n", shown, total)
+	if autoFallback {
+		b.WriteString("match: any-term fallback (auto; no all-term matches)\n")
+	}
+	b.WriteString("\n")
 }

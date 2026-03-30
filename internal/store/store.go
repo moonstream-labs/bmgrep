@@ -73,10 +73,11 @@ type DocumentRecord struct {
 
 // RankedDoc is the rank-mode metadata payload.
 type RankedDoc struct {
-	ID        int64
-	Path      string
-	LineCount int
-	Matches   int
+	ID           int64
+	Path         string
+	LineCount    int
+	Matches      int
+	MatchedTerms int
 }
 
 // SampleDoc is the sample-mode candidate payload.
@@ -1007,6 +1008,12 @@ func (s *Store) DeleteDocumentsByPath(tx *sql.Tx, collectionID int64, paths []st
 
 // SearchRankedDocs returns ranked documents and total candidate count.
 func (s *Store) SearchRankedDocs(collectionID int64, ftsQuery string, limit int) ([]RankedDoc, int, error) {
+	return s.SearchRankedDocsWithTerms(collectionID, ftsQuery, strings.Fields(ftsQuery), limit, false)
+}
+
+// SearchRankedDocsWithTerms returns ranked documents and total candidate count,
+// using queryTerms for per-document hit and optional term-coverage statistics.
+func (s *Store) SearchRankedDocsWithTerms(collectionID int64, ftsQuery string, queryTerms []string, limit int, includeCoverage bool) ([]RankedDoc, int, error) {
 	total, err := s.countMatches(collectionID, ftsQuery)
 	if err != nil {
 		return nil, 0, err
@@ -1050,12 +1057,22 @@ func (s *Store) SearchRankedDocs(collectionID int64, ftsQuery string, limit int)
 		return nil, 0, fmt.Errorf("iterate ranked docs: %w", err)
 	}
 
-	hits, err := s.termHitCounts(collectionID, ids, ftsQuery)
+	hits, err := s.termHitCounts(collectionID, ids, queryTerms)
 	if err != nil {
 		return nil, 0, err
 	}
 	for i := range docs {
 		docs[i].Matches = hits[docs[i].ID]
+	}
+
+	if includeCoverage {
+		coverage, err := s.termCoverageCounts(collectionID, ids, queryTerms)
+		if err != nil {
+			return nil, 0, err
+		}
+		for i := range docs {
+			docs[i].MatchedTerms = coverage[docs[i].ID]
+		}
 	}
 
 	return docs, total, nil
@@ -1130,14 +1147,12 @@ func (s *Store) countMatches(collectionID int64, ftsQuery string) (int, error) {
 }
 
 // termHitCounts returns total token hits by document for query terms.
-// The query is split by spaces because bmgrep normalizes it to plain terms.
-func (s *Store) termHitCounts(collectionID int64, docIDs []int64, normalizedQuery string) (map[int64]int, error) {
+func (s *Store) termHitCounts(collectionID int64, docIDs []int64, terms []string) (map[int64]int, error) {
 	out := make(map[int64]int)
 	if len(docIDs) == 0 {
 		return out, nil
 	}
 
-	terms := strings.Fields(normalizedQuery)
 	if len(terms) == 0 {
 		return out, nil
 	}
@@ -1182,6 +1197,61 @@ func (s *Store) termHitCounts(collectionID int64, docIDs []int64, normalizedQuer
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate token hit counts: %w", err)
+	}
+
+	return out, nil
+}
+
+// termCoverageCounts returns distinct matched query terms by document.
+func (s *Store) termCoverageCounts(collectionID int64, docIDs []int64, terms []string) (map[int64]int, error) {
+	out := make(map[int64]int)
+	if len(docIDs) == 0 {
+		return out, nil
+	}
+	if len(terms) == 0 {
+		return out, nil
+	}
+
+	docClause := placeholders(len(docIDs))
+	termClause := placeholders(len(terms))
+
+	_, _, _, vocabIdent, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return nil, err
+	}
+
+	query := fmt.Sprintf(`
+		SELECT doc, COUNT(DISTINCT term)
+		FROM %s
+		WHERE doc IN (%s)
+		  AND term IN (%s)
+		GROUP BY doc
+	`, vocabIdent, docClause, termClause)
+
+	args := make([]any, 0, len(docIDs)+len(terms))
+	for _, id := range docIDs {
+		args = append(args, id)
+	}
+	for _, term := range terms {
+		args = append(args, term)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query term coverage counts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var docID int64
+		var matchedTerms int
+		if err := rows.Scan(&docID, &matchedTerms); err != nil {
+			return nil, fmt.Errorf("scan term coverage count: %w", err)
+		}
+		out[docID] = matchedTerms
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate term coverage counts: %w", err)
 	}
 
 	return out, nil

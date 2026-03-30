@@ -82,6 +82,7 @@ Flags:
 | `--limit` | `-n` | 5 | Number of ranked documents to return |
 | `--lines` | `-l` | 4 | Lines per excerpt window |
 | `--samples` | `-s` | 1 | Non-overlapping excerpt windows per document |
+| `--match` |  | `auto` | Term matching mode: `all` (AND), `any` (OR), `auto` (AND first, OR fallback on zero multi-term hits) |
 
 ### Rank mode
 
@@ -100,6 +101,40 @@ results: 5 of 12
 ```
 
 `--rank` is mutually exclusive with `--limit`, `--lines`, and `--samples`.
+
+Match behavior:
+
+- `--match all`: strict all-term matching.
+- `--match any`: any-term matching.
+- `--match auto` (default): runs all-term first; if `results: 0 of 0` on a multi-term query, retries as any-term and prints:
+
+```
+match: any-term fallback (auto; no all-term matches)
+```
+
+In rank mode, any-term matching also includes term coverage per result (for example `1/2 terms`).
+
+Practical examples:
+
+```bash
+# Strict all-term match (AND): returns 0 when any term is missing
+bmgrep "SkillsBench decomposition" --rank 5 --match all
+
+# Any-term match (OR): returns partial matches and shows term coverage
+bmgrep "SkillsBench decomposition" --rank 5 --match any
+
+# Default auto mode: tries all-term first, then retries any-term on zero multi-term hits
+bmgrep "SkillsBench decomposition" --rank 5 --match auto
+```
+
+Expected auto fallback indicator:
+
+```
+results: 1 of 1
+match: any-term fallback (auto; no all-term matches)
+
+[1] /home/user/reference/docs/skillsbench.md (42 lines, 2 matches, 1/2 terms)
+```
 
 ## Query construction
 
@@ -161,7 +196,7 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 
 | Layer | Commands | Purpose |
 |---|---|---|
-| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples`, `--collection` | Ranked retrieval and excerpt sampling |
+| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples`, `--match`, `--collection` | Ranked retrieval and excerpt sampling |
 | Collections | `collection create/list/set/rename/delete` | Define and select logical search scopes |
 | Source curation | `collection add`, `collection sources`, `collection remove-source` | Curate multi-source collections across filesystem paths |
 | Ignore | `ignore list/path/add/remove` | Manage ignore patterns on the default collection's primary directory source |

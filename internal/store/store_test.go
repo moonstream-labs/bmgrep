@@ -561,6 +561,101 @@ func TestTermIDFWeightsScopedToCollection(t *testing.T) {
 	}
 }
 
+func TestSearchRankedDocsWithTermsCoverageForAnyQuery(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	docsRoot := filepath.Join(root, "docs")
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(docsRoot, "alpha.md"),
+		RelPath:      "alpha.md",
+		FileHash:     "h-alpha",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "alpha\n",
+		CleanContent: "alpha\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(docsRoot, "beta.md"),
+		RelPath:      "beta.md",
+		FileHash:     "h-beta",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "beta\n",
+		CleanContent: "beta\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(docsRoot, "both.md"),
+		RelPath:      "both.md",
+		FileHash:     "h-both",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "alpha beta\n",
+		CleanContent: "alpha beta\n",
+	})
+
+	if err := rebuildCollectionIndex(t, s, c.ID); err != nil {
+		t.Fatalf("rebuild index: %v", err)
+	}
+
+	queryTerms := []string{"alpha", "beta"}
+	ranked, total, err := s.SearchRankedDocsWithTerms(c.ID, "alpha OR beta", queryTerms, 10, true)
+	if err != nil {
+		t.Fatalf("SearchRankedDocsWithTerms: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected total=3, got %d", total)
+	}
+	if len(ranked) != 3 {
+		t.Fatalf("expected 3 ranked docs, got %d", len(ranked))
+	}
+
+	byPath := make(map[string]RankedDoc, len(ranked))
+	for _, d := range ranked {
+		byPath[d.Path] = d
+	}
+
+	alphaDoc, ok := byPath[filepath.Join(docsRoot, "alpha.md")]
+	if !ok {
+		t.Fatalf("missing alpha.md in ranked results")
+	}
+	if alphaDoc.MatchedTerms != 1 {
+		t.Fatalf("alpha.md matched terms: got %d, want 1", alphaDoc.MatchedTerms)
+	}
+
+	betaDoc, ok := byPath[filepath.Join(docsRoot, "beta.md")]
+	if !ok {
+		t.Fatalf("missing beta.md in ranked results")
+	}
+	if betaDoc.MatchedTerms != 1 {
+		t.Fatalf("beta.md matched terms: got %d, want 1", betaDoc.MatchedTerms)
+	}
+
+	bothDoc, ok := byPath[filepath.Join(docsRoot, "both.md")]
+	if !ok {
+		t.Fatalf("missing both.md in ranked results")
+	}
+	if bothDoc.MatchedTerms != 2 {
+		t.Fatalf("both.md matched terms: got %d, want 2", bothDoc.MatchedTerms)
+	}
+}
+
 func mustUpsertDoc(t *testing.T, s *Store, doc DocumentRecord) {
 	t.Helper()
 	err := s.RunInTransaction(func(tx *sql.Tx) error {

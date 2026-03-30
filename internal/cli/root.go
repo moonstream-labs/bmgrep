@@ -39,6 +39,7 @@ func Execute() error {
 	var flagLines int
 	var flagSamples int
 	var flagRank int
+	var flagMatch string
 
 	root := &cobra.Command{
 		Use:   "bmgrep [query terms]",
@@ -49,6 +50,16 @@ Modes:
   Sample (default)  Ranked files with line-numbered excerpt windows.
   Rank (--rank N)   Index-only triage: path, line count, match count.
   --rank cannot be combined with --limit, --lines, or --samples.
+
+Term matching:
+  --match all   Strict all-term match (FTS5 AND).
+  --match any   Any-term match (FTS5 OR).
+  --match auto  Try all-term first; if 0 results on a multi-term query,
+                 retry as any-term and mark output with fallback notice.
+                 Fallback marker line:
+                   match: any-term fallback (auto; no all-term matches)
+                 In rank mode, effective any-term matching also shows term
+                 coverage per result (for example: 1/2 terms).
 
 Query construction (BM25 is term-matching, not semantic search):
   - Use the vocabulary of the documents, not the vocabulary of the task.
@@ -85,6 +96,11 @@ new/changed files and remove deleted/ignored ones.`,
 
   # Rank mode: fast triage
   bmgrep "authentication middleware" --rank 5
+
+  # Match modes
+  bmgrep "SkillsBench decomposition" --rank 5 --match all
+  bmgrep "SkillsBench decomposition" --rank 5 --match any
+  bmgrep "SkillsBench decomposition" --rank 5 --match auto
 
   # Non-persistent collection override for this query
   bmgrep "authentication middleware" --collection docs-v2 --rank 5
@@ -151,7 +167,12 @@ new/changed files and remove deleted/ignored ones.`,
 				}
 			}
 
-			queryTerms, ftsQuery := search.NormalizePlainQuery(strings.Join(args, " "))
+			matchMode, err := search.ParseMatchMode(flagMatch)
+			if err != nil {
+				return err
+			}
+
+			queryTerms, _ := search.NormalizePlainQuery(strings.Join(args, " "))
 			if len(queryTerms) == 0 {
 				return fmt.Errorf("query contains no searchable terms")
 			}
@@ -166,17 +187,53 @@ new/changed files and remove deleted/ignored ones.`,
 			}
 
 			if rankExplicit {
-				docs, total, err := app.Store.SearchRankedDocs(collection.ID, ftsQuery, flagRank)
+				autoFallback := false
+				effectiveMode := matchMode
+
+				ftsQuery := search.BuildFTSQuery(queryTerms, matchMode)
+				showCoverage := matchMode == search.MatchAny && len(queryTerms) >= 2
+				docs, total, err := app.Store.SearchRankedDocsWithTerms(collection.ID, ftsQuery, queryTerms, flagRank, showCoverage)
 				if err != nil {
 					return err
 				}
-				fmt.Print(search.FormatRankOutput(docs, total))
+
+				if matchMode == search.MatchAuto {
+					effectiveMode = search.MatchAll
+					if total == 0 && len(queryTerms) >= 2 {
+						autoFallback = true
+						effectiveMode = search.MatchAny
+						ftsQuery = search.BuildFTSQuery(queryTerms, search.MatchAny)
+						docs, total, err = app.Store.SearchRankedDocsWithTerms(collection.ID, ftsQuery, queryTerms, flagRank, true)
+						if err != nil {
+							return err
+						}
+					}
+				}
+
+				showCoverage = effectiveMode == search.MatchAny && len(queryTerms) >= 2
+				out := search.FormatRankOutputWithOptions(docs, total, search.RankOutputOptions{
+					Match:            search.MatchInfo{AutoFallback: autoFallback},
+					ShowTermCoverage: showCoverage,
+					QueryTermCount:   len(queryTerms),
+				})
+				fmt.Print(out)
 				return nil
 			}
 
+			autoFallback := false
+			ftsQuery := search.BuildFTSQuery(queryTerms, matchMode)
 			docs, total, err := app.Store.SearchSampleDocs(collection.ID, ftsQuery, flagLimit)
 			if err != nil {
 				return err
+			}
+
+			if matchMode == search.MatchAuto && total == 0 && len(queryTerms) >= 2 {
+				autoFallback = true
+				ftsQuery = search.BuildFTSQuery(queryTerms, search.MatchAny)
+				docs, total, err = app.Store.SearchSampleDocs(collection.ID, ftsQuery, flagLimit)
+				if err != nil {
+					return err
+				}
 			}
 
 			weights, err := app.Store.TermIDFWeights(collection.ID, queryTerms)
@@ -193,7 +250,9 @@ new/changed files and remove deleted/ignored ones.`,
 				results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
 			}
 
-			fmt.Print(search.FormatSampleOutput(results, total))
+			fmt.Print(search.FormatSampleOutputWithOptions(results, total, search.SampleOutputOptions{
+				Match: search.MatchInfo{AutoFallback: autoFallback},
+			}))
 			return nil
 		},
 	}
@@ -204,6 +263,7 @@ new/changed files and remove deleted/ignored ones.`,
 	root.Flags().IntVarP(&flagLines, "lines", "l", defaultLines, "excerpt lines per sample window")
 	root.Flags().IntVarP(&flagSamples, "samples", "s", defaultSamples, "non-overlapping sample windows per result")
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
+	root.Flags().StringVar(&flagMatch, "match", string(search.MatchAuto), "term matching: all (AND), any (OR), or auto (AND first, OR fallback on zero multi-term hits; prints fallback marker)")
 	root.Flags().StringVar(&flagCollection, "collection", "", "query collection override (non-persistent; also supports BMGREP_COLLECTION)")
 
 	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagDB))

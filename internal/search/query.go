@@ -2,9 +2,46 @@
 package search
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 )
+
+type MatchMode string
+
+const (
+	MatchAll  MatchMode = "all"
+	MatchAny  MatchMode = "any"
+	MatchAuto MatchMode = "auto"
+)
+
+func ParseMatchMode(raw string) (MatchMode, error) {
+	switch MatchMode(strings.ToLower(strings.TrimSpace(raw))) {
+	case MatchAll:
+		return MatchAll, nil
+	case MatchAny:
+		return MatchAny, nil
+	case MatchAuto:
+		return MatchAuto, nil
+	default:
+		return "", fmt.Errorf("invalid --match value %q (expected: all, any, auto)", raw)
+	}
+}
+
+func BuildFTSQuery(terms []string, mode MatchMode) string {
+	if len(terms) == 0 {
+		return ""
+	}
+
+	switch mode {
+	case MatchAny:
+		return strings.Join(terms, " OR ")
+	case MatchAll, MatchAuto:
+		return strings.Join(terms, " ")
+	default:
+		return ""
+	}
+}
 
 // NormalizePlainQuery tokenizes user input into plain terms and returns:
 // 1) ordered unique terms and 2) an FTS-safe query string using those terms.
@@ -26,8 +63,7 @@ func NormalizePlainQuery(input string) ([]string, string) {
 		}
 	}
 
-	// FTS5 interprets space-separated terms as AND by default.
-	return unique, strings.Join(unique, " ")
+	return unique, BuildFTSQuery(unique, MatchAll)
 }
 
 // Tokenize approximates unicode61 tokenization by extracting contiguous
