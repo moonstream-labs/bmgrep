@@ -20,7 +20,11 @@ func newCollectionCmd(app *App) *cobra.Command {
 		Use:   "collection",
 		Short: "Manage indexed markdown collections",
 		Long: `Collection commands control which markdown sources are indexed
-and which collection is searched by default.`,
+and which collection is searched by default.
+
+Collections are source sets. Start with collection create --path for an
+initial directory source, then use collection add to curate additional
+directory/file sources from anywhere on disk.`,
 	}
 
 	collectionCmd.AddCommand(

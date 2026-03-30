@@ -72,6 +72,12 @@ Workflow patterns:
   2. Sample mode to preview passages before committing to a full read.
   3. Narrow first, then broaden. Start with the most specific query.
 
+Path resolution:
+  Runtime config/database paths are resolved by precedence:
+  flags -> env vars -> workspace profile -> workspace files ->
+  global profile -> global defaults.
+  Run bmgrep db current to inspect active resolution.
+
 Before every search, bmgrep reconciles the default collection to ingest
 new/changed files and remove deleted/ignored ones.`,
 		Example: strings.TrimSpace(`
@@ -84,6 +90,10 @@ new/changed files and remove deleted/ignored ones.`,
   # Create and activate a collection
   bmgrep collection create docs --path /home/user/reference/docs
   bmgrep collection set docs
+
+  # Initialize workspace-local state and inspect active runtime paths
+  bmgrep db init
+  bmgrep db current
 `),
 		Args: cobra.ArbitraryArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -194,8 +204,8 @@ new/changed files and remove deleted/ignored ones.`,
 		},
 	}
 
-	root.PersistentFlags().StringVar(&flagConfig, "config", "", "path to config file (default: ~/.config/bmgrep/config.yaml)")
-	root.PersistentFlags().StringVar(&flagDB, "db", "", "path to SQLite database (default: ~/.local/share/bmgrep/bmgrep.db)")
+	root.PersistentFlags().StringVar(&flagConfig, "config", "", "config path override (highest precedence; inspect with bmgrep db current)")
+	root.PersistentFlags().StringVar(&flagDB, "db", "", "database path override (highest precedence; inspect with bmgrep db current)")
 
 	root.Flags().IntVarP(&flagLimit, "limit", "n", defaultLimit, "number of ranked documents in sample mode")
 	root.Flags().IntVarP(&flagLines, "lines", "l", defaultLines, "excerpt lines per sample window")

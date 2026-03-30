@@ -20,7 +20,11 @@ func newDBCmd(app *App, flagConfig, flagDB *string) *cobra.Command {
 		Short: "Manage workspace and global bmgrep databases",
 		Long: `Database commands control workspace-local and global database profiles.
 By default, database/profile operations target the nearest workspace (.bmgrep).
-Use --global to manage profiles in ~/.config/bmgrep/databases.yaml.`,
+
+Workspace registry: <workspace>/.bmgrep/databases.yaml
+Global registry:    ~/.config/bmgrep/databases.yaml
+
+Use --global to operate on global profiles.`,
 	}
 
 	dbCmd.AddCommand(
@@ -120,7 +124,11 @@ func newDBInitCmd() *cobra.Command {
 func newDBCurrentCmd(flagConfig, flagDB *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
-		Short: "Show the active runtime db and config resolution",
+		Short: "Show active db/config and where each value came from",
+		Example: strings.TrimSpace(`
+  bmgrep db current
+  bmgrep db current --db /tmp/bmgrep.db
+`),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved, err := dbprofile.ResolvePaths(strings.TrimSpace(*flagConfig), strings.TrimSpace(*flagDB))
 			if err != nil {
@@ -265,7 +273,7 @@ func newDBRegisterCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&flagName, "name", "", "profile name (optional)")
-	cmd.Flags().StringVar(&flagConfig, "config", "", "config path to associate with profile")
+	cmd.Flags().StringVar(&flagConfig, "config", "", "profile-associated config path (used when this profile is active)")
 	cmd.Flags().BoolVarP(&flagGlobal, "global", "g", false, "register in global profile registry")
 	return cmd
 }
@@ -368,6 +376,10 @@ func newDBDoctorCmd(flagConfig, flagDB *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Validate active db/config resolution and database health",
+		Example: strings.TrimSpace(`
+  bmgrep db doctor
+  bmgrep db doctor --db /tmp/bmgrep.db
+`),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved, err := dbprofile.ResolvePaths(strings.TrimSpace(*flagConfig), strings.TrimSpace(*flagDB))
 			if err != nil {

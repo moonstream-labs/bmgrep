@@ -157,6 +157,16 @@ results: 5 of 25  → Broad query, consider refining with more specific terms
 results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 ```
 
+## Command surface
+
+| Layer | Commands | Purpose |
+|---|---|---|
+| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples` | Ranked retrieval and excerpt sampling |
+| Collections | `collection create/list/set/rename/delete` | Define and select logical search scopes |
+| Source curation | `collection add`, `collection sources`, `collection remove-source` | Curate multi-source collections across filesystem paths |
+| Ignore | `ignore list/path/add/remove` | Manage ignore patterns on the default collection's primary directory source |
+| DB profiles | `db init/current/list/register/use/unregister/doctor` | Manage workspace/global DB profiles and inspect runtime resolution |
+
 ## Collection management
 
 Collections define a curated set of Markdown sources (directories and/or individual files). bmgrep always searches the **default collection**, and BM25/IDF statistics are computed only from that collection's indexed documents.
@@ -203,6 +213,8 @@ bmgrep resolves config/database paths with the following precedence:
 5. Active global profile (`~/.config/bmgrep/databases.yaml`)
 6. Global defaults (`~/.config/bmgrep/config.yaml`, `~/.local/share/bmgrep/bmgrep.db`)
 
+Use `bmgrep db current` any time you need to confirm active runtime paths and precedence source.
+
 Workspace databases are scoped by working directory resolution, but collection
 sources may still reference Markdown files anywhere on the filesystem.
 
@@ -229,6 +241,22 @@ bmgrep db use shared --global
 
 # Validate active db/config wiring
 bmgrep db doctor
+
+# Force runtime overrides (highest precedence)
+bmgrep --db /tmp/session.db --config /tmp/session.yaml "skills" --rank 5
+```
+
+### Resolution debugging checklist
+
+```bash
+# 1) Inspect active db/config and precedence source
+bmgrep db current
+
+# 2) Validate db open + config load + basic query health
+bmgrep db doctor
+
+# 3) If needed, force overrides and re-check
+bmgrep --db /tmp/test.db --config /tmp/test.yaml db current
 ```
 
 ## Ignore patterns
@@ -272,6 +300,13 @@ Before every search, bmgrep performs a fast reconciliation against the filesyste
 - **Newly ignored files** are removed from the index.
 
 All mutations happen in a single SQLite transaction — the index is never left in a partially-updated state.
+
+### Concurrency notes
+
+- Concurrent reads are supported.
+- Writes (reconcile/index updates) are serialized by SQLite locking.
+- bmgrep enables WAL mode and a busy timeout to reduce transient lock contention.
+- For heavily parallel workloads, prefer separate DB files per workspace/session.
 
 ### Markdown cleaning
 
@@ -354,7 +389,7 @@ internal/
   paths/             Path expansion and XDG-aware default locations
   search/            Query normalization, sliding window sampler, output formatting
   store/             SQLite schema, FTS5 index, ranked/sample queries, IDF weights
-reference/           Design rationale and implementation guidance documents
+local/reference/     Design rationale and implementation guidance documents
 ```
 
 ## License

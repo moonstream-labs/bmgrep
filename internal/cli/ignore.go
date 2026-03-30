@@ -35,6 +35,9 @@ func newIgnoreListCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List current ignore patterns",
+		Example: strings.TrimSpace(`
+  bmgrep ignore list
+`),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			collection, err := app.requireDefaultCollection()
 			if err != nil {
@@ -69,6 +72,9 @@ func newIgnorePathCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "path",
 		Short: "Print the active .bmgrepignore path",
+		Example: strings.TrimSpace(`
+  bmgrep ignore path
+`),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			collection, err := app.requireDefaultCollection()
 			if err != nil {
@@ -91,7 +97,11 @@ func newIgnoreAddCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "add <pattern...>",
 		Short: "Append ignore patterns",
-		Args:  cobra.MinimumNArgs(1),
+		Example: strings.TrimSpace(`
+  bmgrep ignore add "archive/**"
+  bmgrep ignore add "**/draft-*.md" "**/tmp/**"
+`),
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return addIgnorePatterns(app, args)
 		},
@@ -102,7 +112,11 @@ func newIgnoreRemoveCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <pattern...>",
 		Short: "Remove ignore patterns by exact line match",
-		Args:  cobra.MinimumNArgs(1),
+		Example: strings.TrimSpace(`
+  bmgrep ignore remove "archive/**"
+  bmgrep ignore remove "**/draft-*.md" "**/tmp/**"
+`),
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			collection, err := app.requireDefaultCollection()
 			if err != nil {
