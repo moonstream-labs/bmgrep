@@ -10,8 +10,6 @@ import (
 )
 
 func newIgnoreCmd(app *App) *cobra.Command {
-	var appendFlag []string
-
 	ignoreCmd := &cobra.Command{
 		Use:   "ignore",
 		Short: "Manage .bmgrepignore patterns for the default collection",
@@ -20,17 +18,8 @@ default collection's .bmgrepignore file.`,
 		Example: strings.TrimSpace(`
   bmgrep ignore list
   bmgrep ignore add "archive/**" "**/draft-*.md"
-  bmgrep ignore -f "**/legacy/**"
 `),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(appendFlag) == 0 {
-				return cmd.Help()
-			}
-			return addIgnorePatterns(app, appendFlag)
-		},
 	}
-
-	ignoreCmd.Flags().StringSliceVarP(&appendFlag, "file", "f", nil, "append patterns directly to .bmgrepignore")
 
 	ignoreCmd.AddCommand(
 		newIgnoreListCmd(app),

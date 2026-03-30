@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,9 +293,26 @@ func (s *Store) ListDocumentsForCollection(collectionID int64) (map[string]Docum
 	return out, nil
 }
 
-// UpsertDocument inserts or updates one document row.
-func (s *Store) UpsertDocument(doc DocumentRecord) error {
-	_, err := s.db.Exec(`
+// RunInTransaction executes fn within a single SQLite transaction.
+func (s *Store) RunInTransaction(fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// UpsertDocument inserts or updates one document row within a transaction.
+func (s *Store) UpsertDocument(tx *sql.Tx, doc DocumentRecord) error {
+	_, err := tx.Exec(`
 		INSERT INTO documents (
 			collection_id, path, rel_path, file_hash, mtime_ns, size_bytes,
 			line_count, raw_content, clean_content, updated_at
@@ -315,17 +333,12 @@ func (s *Store) UpsertDocument(doc DocumentRecord) error {
 	return nil
 }
 
-// DeleteDocumentsByPath removes any documents matching the provided paths.
-func (s *Store) DeleteDocumentsByPath(collectionID int64, paths []string) error {
+// DeleteDocumentsByPath removes any documents matching the provided paths
+// within a transaction.
+func (s *Store) DeleteDocumentsByPath(tx *sql.Tx, collectionID int64, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin delete transaction: %w", err)
-	}
-	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`DELETE FROM documents WHERE collection_id = ? AND path = ?`)
 	if err != nil {
@@ -337,10 +350,6 @@ func (s *Store) DeleteDocumentsByPath(collectionID int64, paths []string) error 
 		if _, err := stmt.Exec(collectionID, path); err != nil {
 			return fmt.Errorf("delete document %s: %w", path, err)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit document delete: %w", err)
 	}
 	return nil
 }
@@ -499,6 +508,66 @@ func (s *Store) termHitCounts(docIDs []int64, normalizedQuery string) (map[int64
 	}
 
 	return out, nil
+}
+
+// TermIDFWeights returns BM25-style IDF weights for the given query terms
+// within a collection. IDF = log((N - df + 0.5) / (df + 0.5) + 1).
+func (s *Store) TermIDFWeights(collectionID int64, terms []string) (map[string]float64, error) {
+	weights := make(map[string]float64, len(terms))
+	if len(terms) == 0 {
+		return weights, nil
+	}
+
+	var totalDocs float64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM documents WHERE collection_id = ?`, collectionID).Scan(&totalDocs)
+	if err != nil {
+		return nil, fmt.Errorf("count documents: %w", err)
+	}
+	if totalDocs == 0 {
+		for _, t := range terms {
+			weights[t] = 1.0
+		}
+		return weights, nil
+	}
+
+	termClause := placeholders(len(terms))
+	query := fmt.Sprintf(`
+		SELECT term, COUNT(DISTINCT doc)
+		FROM docs_vocab
+		WHERE term IN (%s)
+		GROUP BY term
+	`, termClause)
+
+	args := make([]any, len(terms))
+	for i, t := range terms {
+		args[i] = t
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query term doc frequencies: %w", err)
+	}
+	defer rows.Close()
+
+	dfMap := make(map[string]float64, len(terms))
+	for rows.Next() {
+		var term string
+		var df float64
+		if err := rows.Scan(&term, &df); err != nil {
+			return nil, fmt.Errorf("scan term doc frequency: %w", err)
+		}
+		dfMap[term] = df
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate term doc frequencies: %w", err)
+	}
+
+	for _, t := range terms {
+		df := dfMap[t]
+		weights[t] = math.Log((totalDocs-df+0.5)/(df+0.5) + 1)
+	}
+
+	return weights, nil
 }
 
 func placeholders(n int) string {

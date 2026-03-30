@@ -10,13 +10,14 @@ type SampleWindow struct {
 	StartLine int
 	EndLine   int
 	Lines     []string
-	Score     int
+	Score     float64
 	Coverage  int
 }
 
 // ExtractTopWindows returns up to sampleCount non-overlapping windows with the
-// highest query-term density in the document.
-func ExtractTopWindows(raw string, terms []string, linesPerWindow, sampleCount int) []SampleWindow {
+// highest IDF-weighted query-term density in the document.
+// The weights map provides IDF values per term for corpus-aware scoring.
+func ExtractTopWindows(raw string, terms []string, weights map[string]float64, linesPerWindow, sampleCount int) []SampleWindow {
 	if raw == "" || len(terms) == 0 || linesPerWindow <= 0 || sampleCount <= 0 {
 		return nil
 	}
@@ -31,14 +32,16 @@ func ExtractTopWindows(raw string, terms []string, linesPerWindow, sampleCount i
 	}
 
 	termIndex := make(map[string]int, len(terms))
+	termWeights := make([]float64, len(terms))
 	for i, term := range terms {
 		termIndex[term] = i
+		termWeights[i] = weights[term]
 	}
 
 	// lineTermCounts[lineIdx][termIdx] is the number of occurrences for that term
-	// within the line. We also keep a total count per line for fast scoring.
+	// within the line. We also keep a weighted total per line for fast scoring.
 	lineTermCounts := make([][]int, len(lines))
-	lineTotals := make([]int, len(lines))
+	lineScores := make([]float64, len(lines))
 
 	for i, line := range lines {
 		counts := make([]int, len(terms))
@@ -48,21 +51,21 @@ func ExtractTopWindows(raw string, terms []string, linesPerWindow, sampleCount i
 				continue
 			}
 			counts[idx]++
-			lineTotals[i]++
+			lineScores[i] += termWeights[idx]
 		}
 		lineTermCounts[i] = counts
 	}
 
-	// Prefix sums for total hits across lines.
-	prefixTotals := make([]int, len(lines)+1)
+	// Prefix sums for weighted scores across lines.
+	prefixScores := make([]float64, len(lines)+1)
 	for i := range lines {
-		prefixTotals[i+1] = prefixTotals[i] + lineTotals[i]
+		prefixScores[i+1] = prefixScores[i] + lineScores[i]
 	}
 
 	var candidates []SampleWindow
 	for start := 0; start+linesPerWindow <= len(lines); start++ {
 		end := start + linesPerWindow // exclusive
-		score := prefixTotals[end] - prefixTotals[start]
+		score := prefixScores[end] - prefixScores[start]
 		if score == 0 {
 			continue
 		}
@@ -115,6 +118,11 @@ func ExtractTopWindows(raw string, terms []string, linesPerWindow, sampleCount i
 			break
 		}
 	}
+
+	// Present windows in document order regardless of score ranking.
+	sort.SliceStable(selected, func(i, j int) bool {
+		return selected[i].StartLine < selected[j].StartLine
+	})
 
 	return selected
 }

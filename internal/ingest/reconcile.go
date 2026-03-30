@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -18,8 +19,8 @@ type ReconcileStats struct {
 
 // ReconcileCollection synchronizes SQLite state with on-disk markdown files.
 //
-// This is intentionally called before every search to provide correctness
-// without requiring a long-running watcher process.
+// All database mutations are wrapped in a single transaction so the index
+// is never left in a partially-updated state.
 func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, error) {
 	files, err := ScanMarkdownFiles(c.RootPath, c.IgnoreFilePath)
 	if err != nil {
@@ -31,7 +32,13 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 		return ReconcileStats{}, err
 	}
 
-	stats := ReconcileStats{}
+	// Pre-compute all file reads and diffs before opening the transaction
+	// to minimize time spent holding the write lock.
+	type pendingUpsert struct {
+		doc   store.DocumentRecord
+		isNew bool
+	}
+	var upserts []pendingUpsert
 	seen := make(map[string]bool, len(files))
 
 	for _, file := range files {
@@ -48,17 +55,13 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 		}
 
 		raw := string(rawBytes)
-		hash := hash(rawBytes)
+		h := hash(rawBytes)
 
-		if found && current.FileHash == hash {
-			// Content is unchanged but metadata drifted (mtime/size), so keep existing
-			// text payload and only refresh metadata fields.
+		if found && current.FileHash == h {
 			current.RelPath = file.RelPath
 			current.MTimeNS = file.MTimeNS
 			current.SizeBytes = file.SizeBytes
-			if err := s.UpsertDocument(current); err != nil {
-				return ReconcileStats{}, err
-			}
+			upserts = append(upserts, pendingUpsert{doc: current, isNew: false})
 			continue
 		}
 
@@ -67,23 +70,14 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 			CollectionID: c.ID,
 			Path:         file.AbsPath,
 			RelPath:      file.RelPath,
-			FileHash:     hash,
+			FileHash:     h,
 			MTimeNS:      file.MTimeNS,
 			SizeBytes:    file.SizeBytes,
 			LineCount:    lineCount,
 			RawContent:   raw,
 			CleanContent: ToCleanText(rawBytes),
 		}
-
-		if err := s.UpsertDocument(doc); err != nil {
-			return ReconcileStats{}, err
-		}
-
-		if found {
-			stats.Updated++
-		} else {
-			stats.Added++
-		}
+		upserts = append(upserts, pendingUpsert{doc: doc, isNew: !found})
 	}
 
 	var toDelete []string
@@ -92,7 +86,22 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 			toDelete = append(toDelete, path)
 		}
 	}
-	if err := s.DeleteDocumentsByPath(c.ID, toDelete); err != nil {
+
+	stats := ReconcileStats{}
+	err = s.RunInTransaction(func(tx *sql.Tx) error {
+		for _, u := range upserts {
+			if err := s.UpsertDocument(tx, u.doc); err != nil {
+				return err
+			}
+			if u.isNew {
+				stats.Added++
+			} else {
+				stats.Updated++
+			}
+		}
+		return s.DeleteDocumentsByPath(tx, c.ID, toDelete)
+	})
+	if err != nil {
 		return ReconcileStats{}, err
 	}
 	stats.Deleted = len(toDelete)

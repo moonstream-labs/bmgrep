@@ -29,3 +29,38 @@ func TestTokenizeUnicode(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizePlainQueryEmpty(t *testing.T) {
+	terms, fts := NormalizePlainQuery("")
+	if len(terms) != 0 {
+		t.Fatalf("expected no terms for empty input, got %v", terms)
+	}
+	if fts != "" {
+		t.Fatalf("expected empty fts query, got %q", fts)
+	}
+}
+
+func TestNormalizePlainQueryAllPunctuation(t *testing.T) {
+	terms, fts := NormalizePlainQuery("!@#$%^&*()")
+	if len(terms) != 0 {
+		t.Fatalf("expected no terms for all-punctuation input, got %v", terms)
+	}
+	if fts != "" {
+		t.Fatalf("expected empty fts query, got %q", fts)
+	}
+}
+
+func TestNormalizePlainQueryFTSOperatorWords(t *testing.T) {
+	// FTS5 operators are case-sensitive uppercase. Our normalizer lowercases
+	// everything, so "NOT", "OR", "AND", "NEAR" become safe plain terms.
+	terms, fts := NormalizePlainQuery("NOT OR AND NEAR")
+	if len(terms) != 4 {
+		t.Fatalf("expected 4 terms, got %d (%v)", len(terms), terms)
+	}
+	if terms[0] != "not" || terms[1] != "or" || terms[2] != "and" || terms[3] != "near" {
+		t.Fatalf("FTS operator words not lowercased: %v", terms)
+	}
+	if fts != "not or and near" {
+		t.Fatalf("unexpected fts query: %q", fts)
+	}
+}

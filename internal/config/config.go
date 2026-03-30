@@ -21,10 +21,10 @@ type Config struct {
 // Precedence is explicit flag path, then BMGREP_CONFIG env var, then default.
 func ResolvePath(explicit string) (string, error) {
 	if explicit != "" {
-		return expandTilde(explicit), nil
+		return paths.ExpandPath(explicit)
 	}
 	if env := strings.TrimSpace(os.Getenv("BMGREP_CONFIG")); env != "" {
-		return expandTilde(env), nil
+		return paths.ExpandPath(env)
 	}
 	return paths.DefaultConfigPath()
 }
@@ -61,15 +61,4 @@ func Save(path string, cfg *Config) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
-}
-
-func expandTilde(path string) string {
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
-		}
-		return filepath.Join(home, path[1:])
-	}
-	return path
 }

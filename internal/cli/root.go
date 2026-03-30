@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -46,24 +45,33 @@ func Execute() error {
 	root := &cobra.Command{
 		Use:   "bmgrep [query terms]",
 		Short: "Fast BM25 search over local Markdown collections",
-		Long: `bmgrep is a local-first, SQLite-backed documentation search tool for agents.
+		Long: `bmgrep is a local-first, SQLite-backed BM25 search tool for agents.
 
-It supports two modes:
-  1) Sample mode (default): ranked files + line-numbered excerpt windows.
-  2) Rank mode (--rank): index-only triage output with line and match counts.
+Modes:
+  Sample (default)  Ranked files with line-numbered excerpt windows.
+  Rank (--rank N)   Index-only triage: path, line count, match count.
+  --rank cannot be combined with --limit, --lines, or --samples.
 
-Query guidance for BM25:
-  - Use specific nouns and canonical terms from docs.
-  - Keep queries short (2-4 terms) for strongest discrimination.
-  - Reformulate terms when results are weak; avoid long natural-language questions.
+Query construction (BM25 is term-matching, not semantic search):
+  - Use the vocabulary of the documents, not the vocabulary of the task.
+    Good:  bmgrep "authentication middleware configuration"
+    Bad:   bmgrep "how to set up auth"
+  - Keep queries to 2-4 specific, high-discrimination terms.
+    Nouns and domain terms work best. Avoid verbs, prepositions, filler.
+  - Prefer canonical/unabbreviated terms. BM25 has no synonym awareness:
+    "environment variables" matches; "env vars" does not.
+  - Do not wrap queries in question form — "what", "is", "the", "for"
+    carry zero discriminating power.
+  - If results are poor, reformulate with different terms rather than
+    adding more terms to the same query.
 
-Before every search, bmgrep performs a fast reconcile for the default collection
-to ingest new/changed files and remove deleted/ignored files.
+Workflow patterns:
+  1. --rank for triage: identify which documents are relevant.
+  2. Sample mode to preview passages before committing to a full read.
+  3. Narrow first, then broaden. Start with the most specific query.
 
-Mode rules:
-  - Sample mode uses: --limit/-n, --lines/-l, --samples/-s
-  - Rank mode uses: --rank <n>
-  - --rank cannot be combined with sample-mode flags.`,
+Before every search, bmgrep reconciles the default collection to ingest
+new/changed files and remove deleted/ignored ones.`,
 		Example: strings.TrimSpace(`
   # Sample mode: excerpts
   bmgrep "authentication middleware" -n 2 -l 4 -s 2
@@ -116,11 +124,12 @@ Mode rules:
 				return cmd.Help()
 			}
 
-			if flagRank < 0 {
-				return fmt.Errorf("--rank must be >= 0")
-			}
+			rankExplicit := cmd.Flags().Changed("rank")
 
-			if flagRank > 0 {
+			if rankExplicit {
+				if flagRank < 1 {
+					return fmt.Errorf("--rank must be >= 1")
+				}
 				if cmd.Flags().Changed("limit") || cmd.Flags().Changed("lines") || cmd.Flags().Changed("samples") {
 					return fmt.Errorf("--rank is mutually exclusive with --limit, --lines, and --samples")
 				}
@@ -150,7 +159,7 @@ Mode rules:
 				return fmt.Errorf("reconcile collection %q: %w", collection.Name, err)
 			}
 
-			if flagRank > 0 {
+			if rankExplicit {
 				docs, total, err := app.Store.SearchRankedDocs(collection.ID, ftsQuery, flagRank)
 				if err != nil {
 					return err
@@ -164,9 +173,14 @@ Mode rules:
 				return err
 			}
 
+			weights, err := app.Store.TermIDFWeights(collection.ID, queryTerms)
+			if err != nil {
+				return fmt.Errorf("compute IDF weights: %w", err)
+			}
+
 			results := make([]search.SampleResult, 0, len(docs))
 			for _, d := range docs {
-				windows := search.ExtractTopWindows(d.RawContent, queryTerms, flagLines, flagSamples)
+				windows := search.ExtractTopWindows(d.RawContent, queryTerms, weights, flagLines, flagSamples)
 				if len(windows) == 0 {
 					continue
 				}
@@ -206,27 +220,12 @@ func needsRuntime(cmd *cobra.Command) bool {
 
 func resolveDBPath(flag string) (string, error) {
 	if strings.TrimSpace(flag) != "" {
-		return expandAndAbs(flag)
+		return paths.ExpandPath(flag)
 	}
 	if env := strings.TrimSpace(os.Getenv("BMGREP_DB")); env != "" {
-		return expandAndAbs(env)
+		return paths.ExpandPath(env)
 	}
-	p, err := paths.DefaultDBPath()
-	if err != nil {
-		return "", err
-	}
-	return p, nil
-}
-
-func expandAndAbs(path string) (string, error) {
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		path = filepath.Join(home, path[1:])
-	}
-	return filepath.Abs(path)
+	return paths.DefaultDBPath()
 }
 
 func (a *App) requireDefaultCollection() (store.Collection, error) {

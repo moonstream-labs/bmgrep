@@ -20,10 +20,6 @@ var (
 
 	// Removes HTML tags while preserving surrounding text.
 	reHTMLTag = regexp.MustCompile(`<[^>]+>`)
-
-	// Removes inline emphasis markers in a conservative way.
-	reStrong = regexp.MustCompile(`\*\*([^*]+)\*\*`)
-	reEm     = regexp.MustCompile(`\*([^*]+)\*`)
 )
 
 // ToCleanText converts markdown to a cleaner BM25 indexing representation.
@@ -49,8 +45,6 @@ func ToCleanText(raw []byte) string {
 		line = reImageLink.ReplaceAllString(line, `$1`)
 		line = reInlineLink.ReplaceAllString(line, `$1`)
 		line = reHTMLTag.ReplaceAllString(line, "")
-		line = reStrong.ReplaceAllString(line, `$1`)
-		line = reEm.ReplaceAllString(line, `$1`)
 
 		out.WriteString(strings.TrimRight(line, " \t"))
 		out.WriteByte('\n')
