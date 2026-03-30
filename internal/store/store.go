@@ -16,6 +16,9 @@ import (
 const (
 	collectionFTSTablePrefix   = "docs_fts_c"
 	collectionVocabTablePrefix = "docs_vocab_c"
+
+	SourceTypeDirectory = "dir"
+	SourceTypeFile      = "file"
 )
 
 // Store wraps a SQLite handle and exposes typed operations.
@@ -36,6 +39,17 @@ type CollectionSummary struct {
 	Name      string
 	RootPath  string
 	Documents int64
+}
+
+// CollectionSource defines one filesystem source for a collection.
+// source_type is either "dir" (recursive markdown scan) or "file" (single .md file).
+type CollectionSource struct {
+	ID             int64
+	CollectionID   int64
+	SourceType     string
+	SourcePath     string
+	IgnoreFilePath string
+	Enabled        bool
 }
 
 // DocumentRecord tracks on-disk metadata and index payload for one file.
@@ -83,6 +97,7 @@ func Open(path string) (*Store, error) {
 		"PRAGMA foreign_keys = ON;",
 		"PRAGMA journal_mode = WAL;",
 		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA busy_timeout = 5000;",
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -131,9 +146,21 @@ func (s *Store) ensureSchema() error {
 			clean_content TEXT NOT NULL,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS collection_sources (
+			id INTEGER PRIMARY KEY,
+			collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+			source_type TEXT NOT NULL CHECK(source_type IN ('dir', 'file')),
+			source_path TEXT NOT NULL,
+			ignore_file_path TEXT,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(collection_id, source_path)
+		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_collection_path ON documents(collection_id, path);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_collection_rel_path ON documents(collection_id, rel_path);`,
+		`CREATE INDEX IF NOT EXISTS idx_documents_collection_rel_path ON documents(collection_id, rel_path);`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_collection_id ON documents(collection_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_collection_sources_collection_id ON collection_sources(collection_id);`,
 	}
 
 	for _, stmt := range schema {
@@ -142,8 +169,66 @@ func (s *Store) ensureSchema() error {
 		}
 	}
 
+	if err := s.migrateCollectionSourceSchema(); err != nil {
+		return err
+	}
+	if err := s.migrateCollectionSourcesFromLegacyRoot(); err != nil {
+		return err
+	}
+
 	if err := s.migrateLegacyGlobalFTS(); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (s *Store) migrateCollectionSourceSchema() error {
+	var indexSQL string
+	err := s.db.QueryRow(`
+		SELECT sql
+		FROM sqlite_master
+		WHERE type = 'index'
+		  AND name = 'idx_documents_collection_rel_path'
+	`).Scan(&indexSQL)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_collection_rel_path ON documents(collection_id, rel_path);`); err != nil {
+				return fmt.Errorf("create rel_path lookup index: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("inspect rel_path index: %w", err)
+	}
+
+	if !strings.Contains(strings.ToUpper(indexSQL), "UNIQUE") {
+		return nil
+	}
+
+	// Older databases may still have a UNIQUE rel_path index, which prevents
+	// aggregating similarly-named files from different source roots.
+	if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_documents_collection_rel_path;`); err != nil {
+		return fmt.Errorf("drop legacy rel_path unique index: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_collection_rel_path ON documents(collection_id, rel_path);`); err != nil {
+		return fmt.Errorf("create rel_path lookup index: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateCollectionSourcesFromLegacyRoot() error {
+	_, err := s.db.Exec(`
+		INSERT INTO collection_sources(collection_id, source_type, source_path, ignore_file_path, enabled)
+		SELECT c.id, ?, c.root_path, c.ignore_file_path, 1
+		FROM collections c
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM collection_sources cs
+			WHERE cs.collection_id = c.id
+		)
+	`, SourceTypeDirectory)
+	if err != nil {
+		return fmt.Errorf("backfill collection sources from legacy roots: %w", err)
 	}
 
 	return nil
@@ -369,7 +454,8 @@ func (s *Store) DropCollectionSearchIndexTx(tx *sql.Tx, collectionID int64) erro
 	return nil
 }
 
-// CreateCollection inserts a named collection rooted at rootPath.
+// CreateCollection inserts a named collection and creates its initial
+// directory source at rootPath.
 func (s *Store) CreateCollection(name, rootPath, ignoreFilePath string) (Collection, error) {
 	var out Collection
 	err := s.RunInTransaction(func(tx *sql.Tx) error {
@@ -392,6 +478,15 @@ func (s *Store) CreateCollection(name, rootPath, ignoreFilePath string) (Collect
 		if err := s.EnsureCollectionSearchIndexTx(tx, id); err != nil {
 			return err
 		}
+		if _, err := s.addCollectionSourceTx(tx, CollectionSource{
+			CollectionID:   id,
+			SourceType:     SourceTypeDirectory,
+			SourcePath:     rootPath,
+			IgnoreFilePath: ignoreFilePath,
+			Enabled:        true,
+		}); err != nil {
+			return err
+		}
 
 		out = Collection{ID: id, Name: name, RootPath: rootPath, IgnoreFilePath: ignoreFilePath}
 		return nil
@@ -403,14 +498,254 @@ func (s *Store) CreateCollection(name, rootPath, ignoreFilePath string) (Collect
 	return out, nil
 }
 
+func (s *Store) addCollectionSourceTx(tx *sql.Tx, source CollectionSource) (CollectionSource, error) {
+	if source.CollectionID <= 0 {
+		return CollectionSource{}, fmt.Errorf("invalid collection id %d", source.CollectionID)
+	}
+	if source.SourceType != SourceTypeDirectory && source.SourceType != SourceTypeFile {
+		return CollectionSource{}, fmt.Errorf("invalid source type %q", source.SourceType)
+	}
+	if strings.TrimSpace(source.SourcePath) == "" {
+		return CollectionSource{}, fmt.Errorf("source path cannot be empty")
+	}
+
+	res, err := tx.Exec(
+		`INSERT INTO collection_sources(collection_id, source_type, source_path, ignore_file_path, enabled, updated_at)
+		 VALUES(?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		source.CollectionID,
+		source.SourceType,
+		source.SourcePath,
+		nullIfEmpty(source.IgnoreFilePath),
+		boolToInt(source.Enabled),
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return CollectionSource{}, fmt.Errorf("source %q already exists in this collection", source.SourcePath)
+		}
+		return CollectionSource{}, fmt.Errorf("add collection source: %w", err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return CollectionSource{}, fmt.Errorf("read created source id: %w", err)
+	}
+
+	source.ID = id
+	return source, nil
+}
+
+// AddCollectionSource attaches a file or directory source to a collection.
+func (s *Store) AddCollectionSource(collectionID int64, sourceType, sourcePath, ignoreFilePath string) (CollectionSource, error) {
+	var out CollectionSource
+	err := s.RunInTransaction(func(tx *sql.Tx) error {
+		source, err := s.addCollectionSourceTx(tx, CollectionSource{
+			CollectionID:   collectionID,
+			SourceType:     sourceType,
+			SourcePath:     sourcePath,
+			IgnoreFilePath: ignoreFilePath,
+			Enabled:        true,
+		})
+		if err != nil {
+			return err
+		}
+		out = source
+		return nil
+	})
+	if err != nil {
+		return CollectionSource{}, err
+	}
+
+	return out, nil
+}
+
+// ListCollectionSources returns all configured sources for a collection.
+func (s *Store) ListCollectionSources(collectionID int64) ([]CollectionSource, error) {
+	rows, err := s.db.Query(`
+		SELECT id, collection_id, source_type, source_path, COALESCE(ignore_file_path, ''), enabled
+		FROM collection_sources
+		WHERE collection_id = ?
+		ORDER BY id ASC
+	`, collectionID)
+	if err != nil {
+		return nil, fmt.Errorf("list collection sources: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CollectionSource
+	for rows.Next() {
+		var source CollectionSource
+		var enabled int
+		if err := rows.Scan(&source.ID, &source.CollectionID, &source.SourceType, &source.SourcePath, &source.IgnoreFilePath, &enabled); err != nil {
+			return nil, fmt.Errorf("scan collection source: %w", err)
+		}
+		source.Enabled = enabled != 0
+		out = append(out, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate collection sources: %w", err)
+	}
+
+	return out, nil
+}
+
+// PrimaryDirectorySource returns the earliest directory source for a collection.
+func (s *Store) PrimaryDirectorySource(collectionID int64) (CollectionSource, error) {
+	var source CollectionSource
+	var enabled int
+	err := s.db.QueryRow(`
+		SELECT id, collection_id, source_type, source_path, COALESCE(ignore_file_path, ''), enabled
+		FROM collection_sources
+		WHERE collection_id = ?
+		  AND source_type = ?
+		  AND enabled = 1
+		ORDER BY id ASC
+		LIMIT 1
+	`, collectionID, SourceTypeDirectory).Scan(
+		&source.ID,
+		&source.CollectionID,
+		&source.SourceType,
+		&source.SourcePath,
+		&source.IgnoreFilePath,
+		&enabled,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CollectionSource{}, fmt.Errorf("collection has no directory source")
+		}
+		return CollectionSource{}, fmt.Errorf("get primary directory source: %w", err)
+	}
+	source.Enabled = enabled != 0
+	return source, nil
+}
+
+// RemoveCollectionSourceByID removes a source by numeric identifier.
+func (s *Store) RemoveCollectionSourceByID(collectionID, sourceID int64) (CollectionSource, error) {
+	var removed CollectionSource
+	err := s.RunInTransaction(func(tx *sql.Tx) error {
+		var enabled int
+		err := tx.QueryRow(`
+			SELECT id, collection_id, source_type, source_path, COALESCE(ignore_file_path, ''), enabled
+			FROM collection_sources
+			WHERE id = ?
+			  AND collection_id = ?
+		`, sourceID, collectionID).Scan(
+			&removed.ID,
+			&removed.CollectionID,
+			&removed.SourceType,
+			&removed.SourcePath,
+			&removed.IgnoreFilePath,
+			&enabled,
+		)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("source %d not found in this collection", sourceID)
+			}
+			return fmt.Errorf("resolve collection source: %w", err)
+		}
+		removed.Enabled = enabled != 0
+
+		res, err := tx.Exec(`DELETE FROM collection_sources WHERE id = ? AND collection_id = ?`, sourceID, collectionID)
+		if err != nil {
+			return fmt.Errorf("delete collection source: %w", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read collection source delete rows affected: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("source %d not found in this collection", sourceID)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return CollectionSource{}, err
+	}
+	return removed, nil
+}
+
+// RemoveCollectionSourceByPath removes a source by exact absolute path.
+func (s *Store) RemoveCollectionSourceByPath(collectionID int64, sourcePath string) (CollectionSource, error) {
+	var removed CollectionSource
+	err := s.RunInTransaction(func(tx *sql.Tx) error {
+		var enabled int
+		err := tx.QueryRow(`
+			SELECT id, collection_id, source_type, source_path, COALESCE(ignore_file_path, ''), enabled
+			FROM collection_sources
+			WHERE source_path = ?
+			  AND collection_id = ?
+		`, sourcePath, collectionID).Scan(
+			&removed.ID,
+			&removed.CollectionID,
+			&removed.SourceType,
+			&removed.SourcePath,
+			&removed.IgnoreFilePath,
+			&enabled,
+		)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("source %q not found in this collection", sourcePath)
+			}
+			return fmt.Errorf("resolve collection source: %w", err)
+		}
+		removed.Enabled = enabled != 0
+
+		res, err := tx.Exec(`DELETE FROM collection_sources WHERE source_path = ? AND collection_id = ?`, sourcePath, collectionID)
+		if err != nil {
+			return fmt.Errorf("delete collection source: %w", err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read collection source delete rows affected: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("source %q not found in this collection", sourcePath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return CollectionSource{}, err
+	}
+	return removed, nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func nullIfEmpty(v string) any {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
 // ListCollections returns all collections with current document counts.
 func (s *Store) ListCollections() ([]CollectionSummary, error) {
 	rows, err := s.db.Query(`
-		SELECT c.name, c.root_path, COUNT(d.id)
+		SELECT
+			c.name,
+			COALESCE(
+				(
+					SELECT cs.source_path
+					FROM collection_sources cs
+					WHERE cs.collection_id = c.id
+					  AND cs.source_type = ?
+					ORDER BY cs.id ASC
+					LIMIT 1
+				),
+				c.root_path
+			),
+			COUNT(d.id)
 		FROM collections c
 		LEFT JOIN documents d ON d.collection_id = c.id
 		GROUP BY c.id, c.name, c.root_path
-		ORDER BY c.name ASC`)
+		ORDER BY c.name ASC`, SourceTypeDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}

@@ -44,6 +44,134 @@ func TestCreateCollectionEnsuresCollectionSearchIndex(t *testing.T) {
 	}
 }
 
+func TestCollectionSourceLifecycle(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	baseRoot := filepath.Join(root, "docs")
+	c, err := s.CreateCollection("docs", baseRoot, filepath.Join(baseRoot, ".bmgrepignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	sources, err := s.ListCollectionSources(c.ID)
+	if err != nil {
+		t.Fatalf("ListCollectionSources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source after collection create, got %d", len(sources))
+	}
+	if sources[0].SourceType != SourceTypeDirectory {
+		t.Fatalf("expected initial source type %q, got %q", SourceTypeDirectory, sources[0].SourceType)
+	}
+
+	dirSourcePath := filepath.Join(root, "extra")
+	dirSource, err := s.AddCollectionSource(c.ID, SourceTypeDirectory, dirSourcePath, filepath.Join(dirSourcePath, ".bmgrepignore"))
+	if err != nil {
+		t.Fatalf("AddCollectionSource dir: %v", err)
+	}
+	if dirSource.ID == 0 {
+		t.Fatalf("expected non-zero source id")
+	}
+
+	fileSourcePath := filepath.Join(root, "note.md")
+	fileSource, err := s.AddCollectionSource(c.ID, SourceTypeFile, fileSourcePath, "")
+	if err != nil {
+		t.Fatalf("AddCollectionSource file: %v", err)
+	}
+	if fileSource.SourceType != SourceTypeFile {
+		t.Fatalf("expected source type %q, got %q", SourceTypeFile, fileSource.SourceType)
+	}
+
+	if _, err := s.AddCollectionSource(c.ID, SourceTypeFile, fileSourcePath, ""); err == nil {
+		t.Fatalf("expected duplicate source add to fail")
+	}
+
+	sources, err = s.ListCollectionSources(c.ID)
+	if err != nil {
+		t.Fatalf("ListCollectionSources after add: %v", err)
+	}
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 sources after add, got %d", len(sources))
+	}
+
+	removedByPath, err := s.RemoveCollectionSourceByPath(c.ID, fileSourcePath)
+	if err != nil {
+		t.Fatalf("RemoveCollectionSourceByPath: %v", err)
+	}
+	if removedByPath.ID != fileSource.ID {
+		t.Fatalf("removed path source mismatch: got id %d want %d", removedByPath.ID, fileSource.ID)
+	}
+
+	removedByID, err := s.RemoveCollectionSourceByID(c.ID, dirSource.ID)
+	if err != nil {
+		t.Fatalf("RemoveCollectionSourceByID: %v", err)
+	}
+	if removedByID.SourcePath != dirSourcePath {
+		t.Fatalf("removed id source mismatch: got %q want %q", removedByID.SourcePath, dirSourcePath)
+	}
+
+	sources, err = s.ListCollectionSources(c.ID)
+	if err != nil {
+		t.Fatalf("ListCollectionSources final: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 remaining source, got %d", len(sources))
+	}
+}
+
+func TestUpsertAllowsDuplicateRelPathsPerCollection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmgrepignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(root, "source-a", "README.md"),
+		RelPath:      "README.md",
+		FileHash:     "h1",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "alpha\n",
+		CleanContent: "alpha\n",
+	})
+
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(root, "source-b", "README.md"),
+		RelPath:      "README.md",
+		FileHash:     "h2",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "beta\n",
+		CleanContent: "beta\n",
+	})
+
+	docs, err := s.ListDocumentsForCollection(c.ID)
+	if err != nil {
+		t.Fatalf("ListDocumentsForCollection: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 documents with duplicate rel_path, got %d", len(docs))
+	}
+}
+
 func TestRebuildCollectionSearchIndexBackfillsOnlyCollectionDocs(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
 	s, err := Open(dbPath)

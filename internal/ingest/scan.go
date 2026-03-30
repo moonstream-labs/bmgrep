@@ -20,6 +20,20 @@ type FileInfo struct {
 	SizeBytes int64
 }
 
+// ResolveSourcePath canonicalizes a filesystem source path.
+// It expands symlinks where possible and always returns an absolute path.
+func ResolveSourcePath(path string) (string, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		real = path
+	}
+	abs, err := filepath.Abs(real)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path %s: %w", real, err)
+	}
+	return abs, nil
+}
+
 // EnsureIgnoreFile creates .bmgrepignore if it does not already exist.
 func EnsureIgnoreFile(rootPath string) (string, error) {
 	path := filepath.Join(rootPath, IgnoreFileName)
@@ -79,13 +93,9 @@ func ScanMarkdownFiles(rootPath, ignoreFilePath string) ([]FileInfo, error) {
 			return fmt.Errorf("read file info %s: %w", path, err)
 		}
 
-		real, err := filepath.EvalSymlinks(path)
+		abs, err := ResolveSourcePath(path)
 		if err != nil {
-			real = path
-		}
-		abs, err := filepath.Abs(real)
-		if err != nil {
-			return fmt.Errorf("resolve absolute path %s: %w", real, err)
+			return err
 		}
 
 		files = append(files, FileInfo{
@@ -101,6 +111,32 @@ func ScanMarkdownFiles(rootPath, ignoreFilePath string) ([]FileInfo, error) {
 	}
 
 	return files, nil
+}
+
+// ScanMarkdownFile returns metadata for a single markdown file path.
+func ScanMarkdownFile(path string) (FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return FileInfo{}, fmt.Errorf("stat file %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return FileInfo{}, fmt.Errorf("path %s is a directory", path)
+	}
+	if strings.ToLower(filepath.Ext(path)) != ".md" {
+		return FileInfo{}, fmt.Errorf("path %s is not a markdown file", path)
+	}
+
+	abs, err := ResolveSourcePath(path)
+	if err != nil {
+		return FileInfo{}, err
+	}
+
+	return FileInfo{
+		AbsPath:   abs,
+		RelPath:   filepath.Base(path),
+		MTimeNS:   info.ModTime().UnixNano(),
+		SizeBytes: info.Size(),
+	}, nil
 }
 
 func loadMatcher(ignoreFilePath string) (*ignore.GitIgnore, error) {

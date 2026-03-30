@@ -4,14 +4,13 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/moonstream-labs/bmgrep/internal/config"
+	"github.com/moonstream-labs/bmgrep/internal/dbprofile"
 	"github.com/moonstream-labs/bmgrep/internal/ingest"
-	"github.com/moonstream-labs/bmgrep/internal/paths"
 	"github.com/moonstream-labs/bmgrep/internal/search"
 	"github.com/moonstream-labs/bmgrep/internal/store"
 )
@@ -26,6 +25,9 @@ const (
 type App struct {
 	ConfigPath string
 	DBPath     string
+	ConfigFrom string
+	DBFrom     string
+	Workspace  string
 	Config     *config.Config
 	Store      *store.Store
 }
@@ -89,26 +91,26 @@ new/changed files and remove deleted/ignored ones.`,
 				return nil
 			}
 
-			cfgPath, err := config.ResolvePath(flagConfig)
-			if err != nil {
-				return err
-			}
-			cfg, err := config.Load(cfgPath)
+			resolved, err := dbprofile.ResolvePaths(flagConfig, flagDB)
 			if err != nil {
 				return err
 			}
 
-			dbPath, err := resolveDBPath(flagDB)
-			if err != nil {
-				return err
-			}
-			st, err := store.Open(dbPath)
+			cfg, err := config.Load(resolved.ConfigPath)
 			if err != nil {
 				return err
 			}
 
-			app.ConfigPath = cfgPath
-			app.DBPath = dbPath
+			st, err := store.Open(resolved.DBPath)
+			if err != nil {
+				return err
+			}
+
+			app.ConfigPath = resolved.ConfigPath
+			app.DBPath = resolved.DBPath
+			app.ConfigFrom = resolved.ConfigSource
+			app.DBFrom = resolved.DBSource
+			app.Workspace = resolved.Workspace
 			app.Config = cfg
 			app.Store = st
 			return nil
@@ -200,7 +202,7 @@ new/changed files and remove deleted/ignored ones.`,
 	root.Flags().IntVarP(&flagSamples, "samples", "s", defaultSamples, "non-overlapping sample windows per result")
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
 
-	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app))
+	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagConfig, &flagDB))
 
 	return root.Execute()
 }
@@ -212,20 +214,13 @@ func needsRuntime(cmd *cobra.Command) bool {
 	if cmd.Name() == "help" || cmd.Name() == "completion" {
 		return false
 	}
+	if cmd.Name() == "db" || (cmd.Parent() != nil && cmd.Parent().Name() == "db") {
+		return false
+	}
 	if cmd.RunE == nil && cmd.Run == nil {
 		return false
 	}
 	return true
-}
-
-func resolveDBPath(flag string) (string, error) {
-	if strings.TrimSpace(flag) != "" {
-		return paths.ExpandPath(flag)
-	}
-	if env := strings.TrimSpace(os.Getenv("BMGREP_DB")); env != "" {
-		return paths.ExpandPath(env)
-	}
-	return paths.DefaultDBPath()
 }
 
 func (a *App) requireDefaultCollection() (store.Collection, error) {

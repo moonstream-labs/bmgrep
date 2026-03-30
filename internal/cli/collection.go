@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -10,19 +12,23 @@ import (
 	"github.com/moonstream-labs/bmgrep/internal/config"
 	"github.com/moonstream-labs/bmgrep/internal/ingest"
 	"github.com/moonstream-labs/bmgrep/internal/paths"
+	"github.com/moonstream-labs/bmgrep/internal/store"
 )
 
 func newCollectionCmd(app *App) *cobra.Command {
 	collectionCmd := &cobra.Command{
 		Use:   "collection",
 		Short: "Manage indexed markdown collections",
-		Long: `Collection commands control which documentation roots are indexed
+		Long: `Collection commands control which markdown sources are indexed
 and which collection is searched by default.`,
 	}
 
 	collectionCmd.AddCommand(
 		newCollectionListCmd(app),
 		newCollectionCreateCmd(app),
+		newCollectionAddSourceCmd(app),
+		newCollectionSourcesCmd(app),
+		newCollectionRemoveSourceCmd(app),
 		newCollectionSetCmd(app),
 		newCollectionRenameCmd(app),
 		newCollectionDeleteCmd(app),
@@ -67,8 +73,8 @@ func newCollectionCreateCmd(app *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create and index a new collection",
-		Long: `Create a collection rooted at --path, ensure .bmgrepignore exists,
-and index all non-ignored .md files.`,
+		Long: `Create a collection with an initial directory source at --path,
+ensure .bmgrepignore exists, and index all non-ignored .md files.`,
 		Example: strings.TrimSpace(`
   bmgrep collection create docs --path /home/user/reference/docs
 `),
@@ -82,13 +88,11 @@ and index all non-ignored .md files.`,
 				return fmt.Errorf("--path is required")
 			}
 
-			root, err := paths.ExpandPath(flagPath)
+			root, info, err := resolveSourcePath(flagPath)
 			if err != nil {
-				return fmt.Errorf("resolve --path: %w", err)
+				return err
 			}
-			if info, err := os.Stat(root); err != nil {
-				return fmt.Errorf("stat --path: %w", err)
-			} else if !info.IsDir() {
+			if !info.IsDir() {
 				return fmt.Errorf("--path must be a directory")
 			}
 
@@ -124,7 +128,7 @@ and index all non-ignored .md files.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&flagPath, "path", "", "root directory for markdown files (required)")
+	cmd.Flags().StringVar(&flagPath, "path", "", "initial directory source for markdown files (required)")
 	return cmd
 }
 
@@ -151,6 +155,221 @@ func newCollectionSetCmd(app *App) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newCollectionAddSourceCmd(app *App) *cobra.Command {
+	var (
+		flagCollection string
+		flagDir        string
+		flagFile       string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "add [collection]",
+		Short: "Add a file or directory source to a collection",
+		Long: `Add a source to a collection. When collection is omitted, bmgrep uses
+the default collection from config. Exactly one of --dir or --file is required.`,
+		Example: strings.TrimSpace(`
+  bmgrep collection add --dir ~/docs/reference
+  bmgrep collection add --file ~/notes/agent-patterns.md
+  bmgrep collection add docs-v2 --dir ~/tmp/handpicked-md
+  bmgrep collection add --collection docs-v2 --file ~/work/spec.md
+`),
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			explicit := strings.TrimSpace(flagCollection)
+			if len(args) == 1 {
+				if explicit != "" {
+					return fmt.Errorf("collection can be provided either as argument or --collection, not both")
+				}
+				explicit = strings.TrimSpace(args[0])
+			}
+
+			collection, err := resolveCollectionTarget(app, explicit)
+			if err != nil {
+				return err
+			}
+
+			hasDir := strings.TrimSpace(flagDir) != ""
+			hasFile := strings.TrimSpace(flagFile) != ""
+			if hasDir == hasFile {
+				return fmt.Errorf("exactly one of --dir or --file must be provided")
+			}
+
+			var source store.CollectionSource
+			if hasDir {
+				dirPath, info, err := resolveSourcePath(flagDir)
+				if err != nil {
+					return err
+				}
+				if !info.IsDir() {
+					return fmt.Errorf("--dir must point to a directory")
+				}
+
+				ignorePath, err := ingest.EnsureIgnoreFile(dirPath)
+				if err != nil {
+					return err
+				}
+
+				source, err = app.Store.AddCollectionSource(collection.ID, store.SourceTypeDirectory, dirPath, ignorePath)
+				if err != nil {
+					return err
+				}
+			} else {
+				filePath, info, err := resolveSourcePath(flagFile)
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
+					return fmt.Errorf("--file must point to a markdown file, not a directory")
+				}
+				if strings.ToLower(filepath.Ext(filePath)) != ".md" {
+					return fmt.Errorf("--file must have .md extension")
+				}
+
+				source, err = app.Store.AddCollectionSource(collection.ID, store.SourceTypeFile, filePath, "")
+				if err != nil {
+					return err
+				}
+			}
+
+			stats, err := ingest.ReconcileCollection(app.Store, collection)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Added %s source to collection %q\n", source.SourceType, collection.Name)
+			fmt.Printf("source[%d]: %s\n", source.ID, source.SourcePath)
+			if strings.TrimSpace(source.IgnoreFilePath) != "" {
+				fmt.Printf("ignore: %s\n", source.IgnoreFilePath)
+			}
+			fmt.Printf("reindexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to configured default collection)")
+	cmd.Flags().StringVar(&flagDir, "dir", "", "directory source to add (.md files scanned recursively)")
+	cmd.Flags().StringVar(&flagFile, "file", "", "single markdown file source to add")
+	return cmd
+}
+
+func newCollectionSourcesCmd(app *App) *cobra.Command {
+	var flagCollection string
+
+	cmd := &cobra.Command{
+		Use:   "sources [collection]",
+		Short: "List sources configured for a collection",
+		Example: strings.TrimSpace(`
+  bmgrep collection sources
+  bmgrep collection sources docs-v2
+`),
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			explicit := strings.TrimSpace(flagCollection)
+			if len(args) == 1 {
+				if explicit != "" {
+					return fmt.Errorf("collection can be provided either as argument or --collection, not both")
+				}
+				explicit = strings.TrimSpace(args[0])
+			}
+
+			collection, err := resolveCollectionTarget(app, explicit)
+			if err != nil {
+				return err
+			}
+
+			sources, err := app.Store.ListCollectionSources(collection.ID)
+			if err != nil {
+				return err
+			}
+			if len(sources) == 0 {
+				fmt.Printf("Collection %q has no configured sources.\n", collection.Name)
+				return nil
+			}
+
+			fmt.Printf("Collection %q sources:\n", collection.Name)
+			for _, source := range sources {
+				state := "enabled"
+				if !source.Enabled {
+					state = "disabled"
+				}
+				fmt.Printf("  [%d] %s (%s)\n", source.ID, source.SourcePath, source.SourceType)
+				if source.IgnoreFilePath != "" {
+					fmt.Printf("       ignore: %s\n", source.IgnoreFilePath)
+				}
+				fmt.Printf("       state: %s\n", state)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to configured default collection)")
+	return cmd
+}
+
+func newCollectionRemoveSourceCmd(app *App) *cobra.Command {
+	var flagCollection string
+
+	cmd := &cobra.Command{
+		Use:   "remove-source <id-or-path> [collection]",
+		Short: "Remove a configured source from a collection",
+		Example: strings.TrimSpace(`
+  bmgrep collection remove-source 3
+  bmgrep collection remove-source ~/notes/agent-patterns.md
+  bmgrep collection remove-source 3 docs-v2
+`),
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			explicit := strings.TrimSpace(flagCollection)
+			if len(args) == 2 {
+				if explicit != "" {
+					return fmt.Errorf("collection can be provided either as argument or --collection, not both")
+				}
+				explicit = strings.TrimSpace(args[1])
+			}
+
+			collection, err := resolveCollectionTarget(app, explicit)
+			if err != nil {
+				return err
+			}
+
+			target := strings.TrimSpace(args[0])
+			if target == "" {
+				return fmt.Errorf("source id/path cannot be empty")
+			}
+
+			var removed store.CollectionSource
+			if id, err := strconv.ParseInt(target, 10, 64); err == nil {
+				removed, err = app.Store.RemoveCollectionSourceByID(collection.ID, id)
+				if err != nil {
+					return err
+				}
+			} else {
+				path, _, err := resolveSourcePathBestEffort(target)
+				if err != nil {
+					return err
+				}
+				removed, err = app.Store.RemoveCollectionSourceByPath(collection.ID, path)
+				if err != nil {
+					return err
+				}
+			}
+
+			stats, err := ingest.ReconcileCollection(app.Store, collection)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Removed source[%d] from collection %q\n", removed.ID, collection.Name)
+			fmt.Printf("source: %s (%s)\n", removed.SourcePath, removed.SourceType)
+			fmt.Printf("reindexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to configured default collection)")
+	return cmd
 }
 
 func newCollectionRenameCmd(app *App) *cobra.Command {
@@ -214,4 +433,46 @@ func newCollectionDeleteCmd(app *App) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func resolveCollectionTarget(app *App, explicit string) (store.Collection, error) {
+	if name := strings.TrimSpace(explicit); name != "" {
+		return app.Store.GetCollectionByName(name)
+	}
+	return app.requireDefaultCollection()
+}
+
+func resolveSourcePath(input string) (string, os.FileInfo, error) {
+	expanded, err := paths.ExpandPath(strings.TrimSpace(input))
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve source path: %w", err)
+	}
+	info, err := os.Stat(expanded)
+	if err != nil {
+		return "", nil, fmt.Errorf("stat source path: %w", err)
+	}
+	resolved, err := ingest.ResolveSourcePath(expanded)
+	if err != nil {
+		return "", nil, err
+	}
+	return resolved, info, nil
+}
+
+func resolveSourcePathBestEffort(input string) (string, os.FileInfo, error) {
+	expanded, err := paths.ExpandPath(strings.TrimSpace(input))
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve source path: %w", err)
+	}
+	resolved, err := ingest.ResolveSourcePath(expanded)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return resolved, nil, nil
+		}
+		return "", nil, fmt.Errorf("stat source path: %w", err)
+	}
+	return resolved, info, nil
 }

@@ -159,11 +159,25 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 
 ## Collection management
 
-Collections define which directory of Markdown files to index. bmgrep always searches the **default collection**, and BM25/IDF statistics are computed only from that collection's indexed documents.
+Collections define a curated set of Markdown sources (directories and/or individual files). bmgrep always searches the **default collection**, and BM25/IDF statistics are computed only from that collection's indexed documents.
 
 ```bash
 # Create a collection (first collection auto-becomes default)
 bmgrep collection create docs --path /home/user/reference/docs
+
+# Add extra sources to the default collection (implicit target)
+bmgrep collection add --dir /home/user/notes/shared-md
+bmgrep collection add --file /home/user/workflows/agent-playbook.md
+
+# Add a source to an explicit collection
+bmgrep collection add docs --dir /home/user/archive/handpicked
+
+# List configured sources for a collection
+bmgrep collection sources
+
+# Remove a source by id or absolute path
+bmgrep collection remove-source 3
+bmgrep collection remove-source /home/user/workflows/agent-playbook.md
 
 # List all collections (* marks default)
 bmgrep collection list
@@ -178,9 +192,48 @@ bmgrep collection rename docs docs-v2
 bmgrep collection delete old-docs
 ```
 
+## Database profiles and workspace scope
+
+bmgrep resolves config/database paths with the following precedence:
+
+1. Explicit flags (`--config`, `--db`)
+2. Environment variables (`BMGREP_CONFIG`, `BMGREP_DB`)
+3. Active workspace profile (`.bmgrep/databases.yaml`)
+4. Nearest workspace files (`.bmgrep/config.yaml`, `.bmgrep/bmgrep.db`)
+5. Active global profile (`~/.config/bmgrep/databases.yaml`)
+6. Global defaults (`~/.config/bmgrep/config.yaml`, `~/.local/share/bmgrep/bmgrep.db`)
+
+Workspace databases are scoped by working directory resolution, but collection
+sources may still reference Markdown files anywhere on the filesystem.
+
+```bash
+# Initialize workspace-local bmgrep state in current directory
+bmgrep db init
+
+# Show currently resolved db/config and where they came from
+bmgrep db current
+
+# List local workspace profiles
+bmgrep db list
+
+# List global profiles
+bmgrep db list --global
+
+# Register and activate profiles
+bmgrep db register ./.bmgrep/bmgrep.db --name project-a
+bmgrep db use project-a
+
+# Register/use global profile
+bmgrep db register ~/.local/share/bmgrep/shared.db --global --name shared
+bmgrep db use shared --global
+
+# Validate active db/config wiring
+bmgrep db doctor
+```
+
 ## Ignore patterns
 
-Each collection has a `.bmgrepignore` file at its root using `.gitignore`-style syntax. Ignored files are excluded from indexing and removed during reconciliation.
+Each directory source has a `.bmgrepignore` file using `.gitignore`-style syntax. Ignored files are excluded from indexing and removed during reconciliation. The `bmgrep ignore ...` commands operate on the **primary directory source** of the default collection.
 
 ```bash
 # List current patterns
@@ -200,14 +253,14 @@ bmgrep ignore path
 
 ### Indexing
 
-When a collection is created, bmgrep:
+When a collection is reconciled (on create and before search), bmgrep:
 
-1. Recursively scans the root directory for `.md` files.
-2. Applies `.bmgrepignore` patterns to filter candidates.
+1. Scans all enabled sources in the active collection (directory sources recursively, file sources directly).
+2. Applies `.bmgrepignore` patterns per directory source to filter candidates.
 3. Reads each file, computing SHA-256 hash and metadata (mtime, size, line count).
 4. Cleans the Markdown for FTS5 indexing (see below).
 5. Inserts both raw content (for excerpt display) and cleaned content (for ranking) into SQLite.
-6. FTS5 triggers automatically maintain the inverted index.
+6. Rebuilds the collection-local FTS5 shard atomically within the reconciliation transaction.
 
 ### Pre-search reconciliation
 
@@ -265,7 +318,8 @@ Every token in bmgrep output maps to a concrete agent decision or tool call. Lin
 |---|---|---|
 | Config | `~/.config/bmgrep/config.yaml` | `--config` flag, `$BMGREP_CONFIG`, or `$XDG_CONFIG_HOME` |
 | Database | `~/.local/share/bmgrep/bmgrep.db` | `--db` flag, `$BMGREP_DB`, or `$XDG_DATA_HOME` |
-| Ignore file | `<collection_root>/.bmgrepignore` | — |
+| Workspace state | `<workspace>/.bmgrep/` | nearest ancestor workspace directory |
+| Ignore file | `<directory_source>/.bmgrepignore` | managed per source (created automatically for added dirs) |
 
 ## Development
 
@@ -293,8 +347,9 @@ go test ./...
 ```
 cmd/bmgrep/          Entry point
 internal/
-  cli/               Cobra command tree (root, collection, ignore)
+  cli/               Cobra command tree (root, collection, ignore, db)
   config/            YAML config load/save with path resolution
+  dbprofile/         Workspace/global profile registry and path resolution
   ingest/            Filesystem scanning, Markdown cleaning, reconciliation
   paths/             Path expansion and XDG-aware default locations
   search/            Query normalization, sliding window sampler, output formatting

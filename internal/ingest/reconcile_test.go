@@ -273,3 +273,113 @@ func TestReconcileCrossCollectionBM25Isolation(t *testing.T) {
 		t.Fatalf("collection A ranking changed after mutating collection B: baseline=%v after=%v", baselinePaths, afterPaths)
 	}
 }
+
+func TestReconcileMultiSourceCollectionLifecycle(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "bmgrep.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	rootA := filepath.Join(tempDir, "source-a")
+	rootB := filepath.Join(tempDir, "source-b")
+	extraDir := filepath.Join(tempDir, "extra")
+	if err := os.MkdirAll(rootA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(extraDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(rootA, "a.md"), []byte("alpha-source-a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootB, "b.md"), []byte("beta-source-b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileSourcePath := filepath.Join(extraDir, "single.md")
+	if err := os.WriteFile(fileSourcePath, []byte("gamma-standalone-file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ignoreA, err := EnsureIgnoreFile(rootA)
+	if err != nil {
+		t.Fatalf("EnsureIgnoreFile(rootA): %v", err)
+	}
+	c, err := s.CreateCollection("multi", rootA, ignoreA)
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	if _, err := ReconcileCollection(s, c); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+
+	if _, total, err := s.SearchRankedDocs(c.ID, "alpha source a", 5); err != nil {
+		t.Fatalf("search alpha after initial reconcile: %v", err)
+	} else if total != 1 {
+		t.Fatalf("expected alpha match total 1, got %d", total)
+	}
+	if _, total, err := s.SearchRankedDocs(c.ID, "beta source b", 5); err != nil {
+		t.Fatalf("search beta after initial reconcile: %v", err)
+	} else if total != 0 {
+		t.Fatalf("expected beta match total 0 before adding source, got %d", total)
+	}
+
+	ignoreB, err := EnsureIgnoreFile(rootB)
+	if err != nil {
+		t.Fatalf("EnsureIgnoreFile(rootB): %v", err)
+	}
+	if _, err := s.AddCollectionSource(c.ID, store.SourceTypeDirectory, rootB, ignoreB); err != nil {
+		t.Fatalf("add directory source: %v", err)
+	}
+	if _, err := s.AddCollectionSource(c.ID, store.SourceTypeFile, fileSourcePath, ""); err != nil {
+		t.Fatalf("add file source: %v", err)
+	}
+
+	stats, err := ReconcileCollection(s, c)
+	if err != nil {
+		t.Fatalf("reconcile after adding sources: %v", err)
+	}
+	if stats.Added < 2 {
+		t.Fatalf("expected at least two documents added after adding sources, got %+v", stats)
+	}
+
+	if _, total, err := s.SearchRankedDocs(c.ID, "beta source b", 5); err != nil {
+		t.Fatalf("search beta after adding source: %v", err)
+	} else if total != 1 {
+		t.Fatalf("expected beta match total 1, got %d", total)
+	}
+	if _, total, err := s.SearchRankedDocs(c.ID, "gamma standalone file", 5); err != nil {
+		t.Fatalf("search gamma after adding source: %v", err)
+	} else if total != 1 {
+		t.Fatalf("expected gamma match total 1, got %d", total)
+	}
+
+	removed, err := s.RemoveCollectionSourceByPath(c.ID, fileSourcePath)
+	if err != nil {
+		t.Fatalf("remove file source: %v", err)
+	}
+	if removed.SourceType != store.SourceTypeFile {
+		t.Fatalf("expected removed source type file, got %q", removed.SourceType)
+	}
+
+	stats, err = ReconcileCollection(s, c)
+	if err != nil {
+		t.Fatalf("reconcile after removing file source: %v", err)
+	}
+	if stats.Deleted < 1 {
+		t.Fatalf("expected at least one document deleted after removing file source, got %+v", stats)
+	}
+
+	if _, total, err := s.SearchRankedDocs(c.ID, "gamma standalone file", 5); err != nil {
+		t.Fatalf("search gamma after removing source: %v", err)
+	} else if total != 0 {
+		t.Fatalf("expected gamma match total 0 after source removal, got %d", total)
+	}
+}

@@ -3,8 +3,10 @@ package ingest
 import (
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/moonstream-labs/bmgrep/internal/store"
@@ -22,7 +24,7 @@ type ReconcileStats struct {
 // All database mutations are wrapped in a single transaction so the index
 // is never left in a partially-updated state.
 func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, error) {
-	files, err := ScanMarkdownFiles(c.RootPath, c.IgnoreFilePath)
+	files, err := scanCollectionSources(s, c)
 	if err != nil {
 		return ReconcileStats{}, err
 	}
@@ -126,6 +128,82 @@ func ReconcileCollection(s *store.Store, c store.Collection) (ReconcileStats, er
 	stats.Deleted = len(toDelete)
 
 	return stats, nil
+}
+
+func scanCollectionSources(s *store.Store, c store.Collection) ([]FileInfo, error) {
+	sources, err := s.ListCollectionSources(c.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(sources) == 0 && strings.TrimSpace(c.RootPath) != "" {
+		// Legacy fallback; normally migrateCollectionSourcesFromLegacyRoot
+		// ensures every collection has at least one directory source.
+		sources = append(sources, store.CollectionSource{
+			CollectionID:   c.ID,
+			SourceType:     store.SourceTypeDirectory,
+			SourcePath:     c.RootPath,
+			IgnoreFilePath: c.IgnoreFilePath,
+			Enabled:        true,
+		})
+	}
+
+	seen := make(map[string]bool)
+	out := make([]FileInfo, 0)
+
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+
+		switch source.SourceType {
+		case store.SourceTypeDirectory:
+			dirFiles, err := ScanMarkdownFiles(source.SourcePath, source.IgnoreFilePath)
+			if err != nil {
+				if isSourceMissing(err) {
+					continue
+				}
+				return nil, err
+			}
+			for _, f := range dirFiles {
+				if seen[f.AbsPath] {
+					continue
+				}
+				seen[f.AbsPath] = true
+				out = append(out, f)
+			}
+
+		case store.SourceTypeFile:
+			if strings.ToLower(filepath.Ext(source.SourcePath)) != ".md" {
+				continue
+			}
+			f, err := ScanMarkdownFile(source.SourcePath)
+			if err != nil {
+				if isSourceMissing(err) {
+					continue
+				}
+				return nil, err
+			}
+			f.RelPath = filepath.Base(f.AbsPath)
+			if seen[f.AbsPath] {
+				continue
+			}
+			seen[f.AbsPath] = true
+			out = append(out, f)
+
+		default:
+			return nil, fmt.Errorf("unknown source type %q", source.SourceType)
+		}
+	}
+
+	return out, nil
+}
+
+func isSourceMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func hash(data []byte) string {
