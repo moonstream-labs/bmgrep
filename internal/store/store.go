@@ -39,7 +39,12 @@ type CollectionSummary struct {
 	Name      string
 	RootPath  string
 	Documents int64
+	IsDefault bool
 }
+
+// ErrNoDefaultCollection indicates the database has no persistent
+// default collection configured.
+var ErrNoDefaultCollection = errors.New("no default collection set")
 
 // CollectionSource defines one filesystem source for a collection.
 // source_type is either "dir" (recursive markdown scan) or "file" (single .md file).
@@ -157,6 +162,13 @@ func (s *Store) ensureSchema() error {
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(collection_id, source_path)
 		);`,
+		`CREATE TABLE IF NOT EXISTS app_state (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			default_collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL
+		);`,
+		`INSERT INTO app_state(id, default_collection_id)
+		 VALUES(1, NULL)
+		 ON CONFLICT(id) DO NOTHING;`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_collection_path ON documents(collection_id, path);`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_collection_rel_path ON documents(collection_id, rel_path);`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_collection_id ON documents(collection_id);`,
@@ -180,6 +192,67 @@ func (s *Store) ensureSchema() error {
 		return err
 	}
 
+	return nil
+}
+
+// GetDefaultCollection resolves the persistent default collection from app_state.
+func (s *Store) GetDefaultCollection() (Collection, error) {
+	var (
+		id             sql.NullInt64
+		name           sql.NullString
+		rootPath       sql.NullString
+		ignoreFilePath sql.NullString
+	)
+	err := s.db.QueryRow(`
+		SELECT c.id, c.name, c.root_path, c.ignore_file_path
+		FROM app_state a
+		LEFT JOIN collections c ON c.id = a.default_collection_id
+		WHERE a.id = 1
+	`).Scan(&id, &name, &rootPath, &ignoreFilePath)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Collection{}, ErrNoDefaultCollection
+		}
+		return Collection{}, fmt.Errorf("get default collection: %w", err)
+	}
+	if !id.Valid {
+		return Collection{}, ErrNoDefaultCollection
+	}
+
+	c := Collection{
+		ID:             id.Int64,
+		Name:           name.String,
+		RootPath:       rootPath.String,
+		IgnoreFilePath: ignoreFilePath.String,
+	}
+	return c, nil
+}
+
+// SetDefaultCollectionByName persists the default collection in app_state.
+func (s *Store) SetDefaultCollectionByName(name string) error {
+	collection, err := s.GetCollectionByName(name)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(`
+		UPDATE app_state
+		SET default_collection_id = ?
+		WHERE id = 1
+	`, collection.ID)
+	if err != nil {
+		return fmt.Errorf("set default collection: %w", err)
+	}
+
+	return nil
+}
+
+// ClearDefaultCollection removes the persistent default collection.
+func (s *Store) ClearDefaultCollection() error {
+	_, err := s.db.Exec(`UPDATE app_state SET default_collection_id = NULL WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("clear default collection: %w", err)
+	}
 	return nil
 }
 
@@ -741,7 +814,11 @@ func (s *Store) ListCollections() ([]CollectionSummary, error) {
 				),
 				c.root_path
 			),
-			COUNT(d.id)
+			COUNT(d.id),
+			CASE
+				WHEN c.id = (SELECT default_collection_id FROM app_state WHERE id = 1)
+				THEN 1 ELSE 0
+			END AS is_default
 		FROM collections c
 		LEFT JOIN documents d ON d.collection_id = c.id
 		GROUP BY c.id, c.name, c.root_path
@@ -754,9 +831,11 @@ func (s *Store) ListCollections() ([]CollectionSummary, error) {
 	var out []CollectionSummary
 	for rows.Next() {
 		var r CollectionSummary
-		if err := rows.Scan(&r.Name, &r.RootPath, &r.Documents); err != nil {
+		var isDefault int
+		if err := rows.Scan(&r.Name, &r.RootPath, &r.Documents, &isDefault); err != nil {
 			return nil, fmt.Errorf("scan collection summary: %w", err)
 		}
+		r.IsDefault = isDefault != 0
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

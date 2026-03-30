@@ -4,12 +4,11 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/moonstream-labs/bmgrep/internal/config"
-	"github.com/moonstream-labs/bmgrep/internal/dbprofile"
 	"github.com/moonstream-labs/bmgrep/internal/ingest"
 	"github.com/moonstream-labs/bmgrep/internal/search"
 	"github.com/moonstream-labs/bmgrep/internal/store"
@@ -21,23 +20,20 @@ const (
 	defaultSamples = 1
 )
 
-// App holds runtime dependencies resolved from config and flags.
+// App holds runtime dependencies resolved from flags and environment.
 type App struct {
-	ConfigPath string
-	DBPath     string
-	ConfigFrom string
-	DBFrom     string
-	Workspace  string
-	Config     *config.Config
-	Store      *store.Store
+	DBPath    string
+	DBFrom    string
+	Workspace string
+	Store     *store.Store
 }
 
 // Execute builds the root command and runs it.
 func Execute() error {
 	app := &App{}
 
-	var flagConfig string
 	var flagDB string
+	var flagCollection string
 
 	var flagLimit int
 	var flagLines int
@@ -73,12 +69,15 @@ Workflow patterns:
   3. Narrow first, then broaden. Start with the most specific query.
 
 Path resolution:
-  Runtime config/database paths are resolved by precedence:
-  flags -> env vars -> workspace profile -> workspace files ->
-  global profile -> global defaults.
+  Runtime database paths are resolved by precedence:
+  --db flag -> BMGREP_DB -> nearest .bmgrep/bmgrep.db -> global default.
   Run bmgrep db current to inspect active resolution.
 
-Before every search, bmgrep reconciles the default collection to ingest
+Collection resolution:
+  Query target collection is resolved by precedence:
+  --collection -> BMGREP_COLLECTION -> persistent default in the database.
+
+Before every search, bmgrep reconciles the active target collection to ingest
 new/changed files and remove deleted/ignored ones.`,
 		Example: strings.TrimSpace(`
   # Sample mode: excerpts
@@ -86,6 +85,9 @@ new/changed files and remove deleted/ignored ones.`,
 
   # Rank mode: fast triage
   bmgrep "authentication middleware" --rank 5
+
+  # Non-persistent collection override for this query
+  bmgrep "authentication middleware" --collection docs-v2 --rank 5
 
   # Create and activate a collection
   bmgrep collection create docs --path /home/user/reference/docs
@@ -101,12 +103,7 @@ new/changed files and remove deleted/ignored ones.`,
 				return nil
 			}
 
-			resolved, err := dbprofile.ResolvePaths(flagConfig, flagDB)
-			if err != nil {
-				return err
-			}
-
-			cfg, err := config.Load(resolved.ConfigPath)
+			resolved, err := resolveDBRuntimePath(flagDB)
 			if err != nil {
 				return err
 			}
@@ -116,12 +113,9 @@ new/changed files and remove deleted/ignored ones.`,
 				return err
 			}
 
-			app.ConfigPath = resolved.ConfigPath
 			app.DBPath = resolved.DBPath
-			app.ConfigFrom = resolved.ConfigSource
 			app.DBFrom = resolved.DBSource
 			app.Workspace = resolved.Workspace
-			app.Config = cfg
 			app.Store = st
 			return nil
 		},
@@ -162,7 +156,7 @@ new/changed files and remove deleted/ignored ones.`,
 				return fmt.Errorf("query contains no searchable terms")
 			}
 
-			collection, err := app.requireDefaultCollection()
+			collection, err := app.resolveCollection(flagCollection)
 			if err != nil {
 				return err
 			}
@@ -204,15 +198,15 @@ new/changed files and remove deleted/ignored ones.`,
 		},
 	}
 
-	root.PersistentFlags().StringVar(&flagConfig, "config", "", "config path override (highest precedence; inspect with bmgrep db current)")
 	root.PersistentFlags().StringVar(&flagDB, "db", "", "database path override (highest precedence; inspect with bmgrep db current)")
 
 	root.Flags().IntVarP(&flagLimit, "limit", "n", defaultLimit, "number of ranked documents in sample mode")
 	root.Flags().IntVarP(&flagLines, "lines", "l", defaultLines, "excerpt lines per sample window")
 	root.Flags().IntVarP(&flagSamples, "samples", "s", defaultSamples, "non-overlapping sample windows per result")
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
+	root.Flags().StringVar(&flagCollection, "collection", "", "query collection override (non-persistent; also supports BMGREP_COLLECTION)")
 
-	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagConfig, &flagDB))
+	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagDB))
 
 	return root.Execute()
 }
@@ -233,12 +227,26 @@ func needsRuntime(cmd *cobra.Command) bool {
 	return true
 }
 
-func (a *App) requireDefaultCollection() (store.Collection, error) {
-	if a.Config == nil {
-		return store.Collection{}, errors.New("runtime config not loaded")
+func (a *App) resolveCollection(explicit string) (store.Collection, error) {
+	if a.Store == nil {
+		return store.Collection{}, errors.New("runtime store not loaded")
 	}
-	if strings.TrimSpace(a.Config.DefaultCollection) == "" {
-		return store.Collection{}, fmt.Errorf("no default collection set; run: bmgrep collection set <name>")
+
+	if name := strings.TrimSpace(explicit); name != "" {
+		return a.Store.GetCollectionByName(name)
 	}
-	return a.Store.GetCollectionByName(a.Config.DefaultCollection)
+
+	if envName := strings.TrimSpace(os.Getenv("BMGREP_COLLECTION")); envName != "" {
+		return a.Store.GetCollectionByName(envName)
+	}
+
+	collection, err := a.Store.GetDefaultCollection()
+	if err != nil {
+		if errors.Is(err, store.ErrNoDefaultCollection) {
+			return store.Collection{}, fmt.Errorf("no default collection set; run: bmgrep collection set <name> or pass --collection")
+		}
+		return store.Collection{}, err
+	}
+
+	return collection, nil
 }

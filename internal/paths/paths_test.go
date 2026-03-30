@@ -42,34 +42,6 @@ func TestExpandPathRelative(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigPathXDG(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
-
-	got, err := DefaultConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "/custom/config/bmgrep/config.yaml"
-	if got != want {
-		t.Fatalf("expected %q, got %q", want, got)
-	}
-}
-
-func TestDefaultConfigPathFallback(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	got, err := DefaultConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".config", "bmgrep", "config.yaml")
-	if got != want {
-		t.Fatalf("expected %q, got %q", want, got)
-	}
-}
-
 func TestDefaultDBPathXDG(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "/custom/data")
 

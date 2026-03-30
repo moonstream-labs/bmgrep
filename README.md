@@ -161,15 +161,15 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 
 | Layer | Commands | Purpose |
 |---|---|---|
-| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples` | Ranked retrieval and excerpt sampling |
+| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples`, `--collection` | Ranked retrieval and excerpt sampling |
 | Collections | `collection create/list/set/rename/delete` | Define and select logical search scopes |
 | Source curation | `collection add`, `collection sources`, `collection remove-source` | Curate multi-source collections across filesystem paths |
 | Ignore | `ignore list/path/add/remove` | Manage ignore patterns on the default collection's primary directory source |
-| DB profiles | `db init/current/list/register/use/unregister/doctor` | Manage workspace/global DB profiles and inspect runtime resolution |
+| Database | `db init/current/doctor` | Initialize workspace DBs, inspect resolution, and validate DB health |
 
 ## Collection management
 
-Collections define a curated set of Markdown sources (directories and/or individual files). bmgrep always searches the **default collection**, and BM25/IDF statistics are computed only from that collection's indexed documents.
+Collections define a curated set of Markdown sources (directories and/or individual files). bmgrep searches the active target collection, resolved by `--collection`, then `BMGREP_COLLECTION`, then persistent default collection. BM25/IDF statistics are always computed only from that collection's indexed documents.
 
 ```bash
 # Create a collection (first collection auto-becomes default)
@@ -202,66 +202,64 @@ bmgrep collection rename docs docs-v2
 bmgrep collection delete old-docs
 ```
 
-## Database profiles and workspace scope
+## Database resolution and workspace scope
 
-bmgrep resolves config/database paths with the following precedence:
+bmgrep resolves database paths with the following precedence:
 
-1. Explicit flags (`--config`, `--db`)
-2. Environment variables (`BMGREP_CONFIG`, `BMGREP_DB`)
-3. Active workspace profile (`.bmgrep/databases.yaml`)
-4. Nearest workspace files (`.bmgrep/config.yaml`, `.bmgrep/bmgrep.db`)
-5. Active global profile (`~/.config/bmgrep/databases.yaml`)
-6. Global defaults (`~/.config/bmgrep/config.yaml`, `~/.local/share/bmgrep/bmgrep.db`)
+1. `--db` flag (one-off override)
+2. `BMGREP_DB` environment variable (session pin)
+3. Nearest ancestor workspace database (`.bmgrep/bmgrep.db`)
+4. Global default (`~/.local/share/bmgrep/bmgrep.db`)
 
-Use `bmgrep db current` any time you need to confirm active runtime paths and precedence source.
+Collection resolution is independent and follows:
 
-Workspace databases are scoped by working directory resolution, but collection
-sources may still reference Markdown files anywhere on the filesystem.
+1. `--collection` query override
+2. `BMGREP_COLLECTION` session override
+3. Persistent default collection stored in the database (`collection set`)
+
+Use `bmgrep db current` any time you need to confirm active runtime DB path and precedence source.
+
+Workspace databases are scoped by working directory resolution, but collection sources may still reference Markdown files anywhere on the filesystem.
 
 ```bash
 # Initialize workspace-local bmgrep state in current directory
 bmgrep db init
 
-# Show currently resolved db/config and where they came from
+# Show currently resolved DB path and where it came from
 bmgrep db current
 
-# List local workspace profiles
-bmgrep db list
-
-# List global profiles
-bmgrep db list --global
-
-# Register and activate profiles
-bmgrep db register ./.bmgrep/bmgrep.db --name project-a
-bmgrep db use project-a
-
-# Register/use global profile
-bmgrep db register ~/.local/share/bmgrep/shared.db --global --name shared
-bmgrep db use shared --global
-
-# Validate active db/config wiring
+# Validate active DB wiring
 bmgrep db doctor
 
-# Force runtime overrides (highest precedence)
-bmgrep --db /tmp/session.db --config /tmp/session.yaml "skills" --rank 5
+# Force runtime DB override (highest precedence)
+bmgrep --db /tmp/session.db "skills" --rank 5
+
+# Non-persistent collection override for a single query
+bmgrep "skills" --collection docs-v2 --rank 5
+
+# Session-level collection pin
+export BMGREP_COLLECTION=docs-v2
+
+# Persistently change default collection in the current database
+bmgrep collection set docs-v2
 ```
 
 ### Resolution debugging checklist
 
 ```bash
-# 1) Inspect active db/config and precedence source
+# 1) Inspect active DB path and precedence source
 bmgrep db current
 
-# 2) Validate db open + config load + basic query health
+# 2) Validate DB open + basic query health
 bmgrep db doctor
 
 # 3) If needed, force overrides and re-check
-bmgrep --db /tmp/test.db --config /tmp/test.yaml db current
+bmgrep --db /tmp/test.db db current
 ```
 
 ## Ignore patterns
 
-Each directory source has a `.bmgrepignore` file using `.gitignore`-style syntax. Ignored files are excluded from indexing and removed during reconciliation. The `bmgrep ignore ...` commands operate on the **primary directory source** of the default collection.
+Each directory source has a `.bmgrepignore` file using `.gitignore`-style syntax. Ignored files are excluded from indexing and removed during reconciliation. The `bmgrep ignore ...` commands operate on the **primary directory source** of the active collection (`BMGREP_COLLECTION` override or persistent default).
 
 ```bash
 # List current patterns
@@ -351,7 +349,6 @@ Every token in bmgrep output maps to a concrete agent decision or tool call. Lin
 
 | Data | Default path | Override |
 |---|---|---|
-| Config | `~/.config/bmgrep/config.yaml` | `--config` flag, `$BMGREP_CONFIG`, or `$XDG_CONFIG_HOME` |
 | Database | `~/.local/share/bmgrep/bmgrep.db` | `--db` flag, `$BMGREP_DB`, or `$XDG_DATA_HOME` |
 | Workspace state | `<workspace>/.bmgrep/` | nearest ancestor workspace directory |
 | Ignore file | `<directory_source>/.bmgrepignore` | managed per source (created automatically for added dirs) |
@@ -374,8 +371,8 @@ go test ./...
 |---|---|---|
 | `internal/search` | 19 | Query normalization, tokenization, FTS operator safety, IDF-weighted window selection, non-overlap enforcement, document-order output, coverage tiebreaker, output formatting, singular/plural, comma formatting |
 | `internal/ingest` | 17 | Markdown cleaning (frontmatter, fences, tilde fences, nested fences, links, images, HTML, reference defs), ignore file read/append/remove, reconcile lifecycle (add/update/delete/ignore/line-number fidelity) |
-| `internal/paths` | 7 | Tilde expansion, absolute/relative paths, XDG config/data fallback |
-| `internal/config` | 5 | Load missing file, save/load round-trip, resolution precedence (explicit > env > default) |
+| `internal/paths` | 5 | Tilde expansion, absolute/relative paths, XDG data fallback |
+| `internal/store` | 13 | Collection source lifecycle, default collection state, schema migration behavior, collection-scoped index operations |
 
 ### Project structure
 
@@ -383,8 +380,6 @@ go test ./...
 cmd/bmgrep/          Entry point
 internal/
   cli/               Cobra command tree (root, collection, ignore, db)
-  config/            YAML config load/save with path resolution
-  dbprofile/         Workspace/global profile registry and path resolution
   ingest/            Filesystem scanning, Markdown cleaning, reconciliation
   paths/             Path expansion and XDG-aware default locations
   search/            Query normalization, sliding window sampler, output formatting

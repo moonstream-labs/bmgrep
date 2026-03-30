@@ -12,9 +12,12 @@ import (
 func newIgnoreCmd(app *App) *cobra.Command {
 	ignoreCmd := &cobra.Command{
 		Use:   "ignore",
-		Short: "Manage .bmgrepignore patterns for the default collection",
+		Short: "Manage .bmgrepignore patterns for the active collection",
 		Long: `Ignore patterns use .gitignore-style syntax and are stored in the
-default collection's primary directory source .bmgrepignore file.`,
+active collection's primary directory source .bmgrepignore file.
+
+Active collection resolution:
+  BMGREP_COLLECTION -> persistent default collection in the database.`,
 		Example: strings.TrimSpace(`
   bmgrep ignore list
   bmgrep ignore add "archive/**" "**/draft-*.md"
@@ -39,7 +42,7 @@ func newIgnoreListCmd(app *App) *cobra.Command {
   bmgrep ignore list
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			collection, err := app.requireDefaultCollection()
+			collection, err := app.resolveCollection("")
 			if err != nil {
 				return err
 			}
@@ -76,7 +79,7 @@ func newIgnorePathCmd(app *App) *cobra.Command {
   bmgrep ignore path
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			collection, err := app.requireDefaultCollection()
+			collection, err := app.resolveCollection("")
 			if err != nil {
 				return err
 			}
@@ -118,7 +121,7 @@ func newIgnoreRemoveCmd(app *App) *cobra.Command {
 `),
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			collection, err := app.requireDefaultCollection()
+			collection, err := app.resolveCollection("")
 			if err != nil {
 				return err
 			}
@@ -147,7 +150,7 @@ func newIgnoreRemoveCmd(app *App) *cobra.Command {
 }
 
 func addIgnorePatterns(app *App, patterns []string) error {
-	collection, err := app.requireDefaultCollection()
+	collection, err := app.resolveCollection("")
 	if err != nil {
 		return err
 	}

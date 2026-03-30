@@ -19,18 +19,6 @@ func ExpandPath(path string) (string, error) {
 	return filepath.Abs(path)
 }
 
-// DefaultConfigPath returns the canonical config location for bmgrep.
-func DefaultConfigPath() (string, error) {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "bmgrep", "config.yaml"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "bmgrep", "config.yaml"), nil
-}
-
 // DefaultDBPath returns the canonical SQLite database location for bmgrep.
 func DefaultDBPath() (string, error) {
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {

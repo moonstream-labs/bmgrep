@@ -44,6 +44,78 @@ func TestCreateCollectionEnsuresCollectionSearchIndex(t *testing.T) {
 	}
 }
 
+func TestDefaultCollectionLifecycle(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.GetDefaultCollection(); !errors.Is(err, ErrNoDefaultCollection) {
+		t.Fatalf("expected ErrNoDefaultCollection before set, got %v", err)
+	}
+
+	root := t.TempDir()
+	c1, err := s.CreateCollection("docs-a", filepath.Join(root, "docs-a"), filepath.Join(root, "docs-a", ".bmgrepignore"))
+	if err != nil {
+		t.Fatalf("create docs-a: %v", err)
+	}
+	c2, err := s.CreateCollection("docs-b", filepath.Join(root, "docs-b"), filepath.Join(root, "docs-b", ".bmgrepignore"))
+	if err != nil {
+		t.Fatalf("create docs-b: %v", err)
+	}
+
+	if err := s.SetDefaultCollectionByName(c1.Name); err != nil {
+		t.Fatalf("SetDefaultCollectionByName(c1): %v", err)
+	}
+
+	defaultCollection, err := s.GetDefaultCollection()
+	if err != nil {
+		t.Fatalf("GetDefaultCollection: %v", err)
+	}
+	if defaultCollection.ID != c1.ID {
+		t.Fatalf("expected default %d, got %d", c1.ID, defaultCollection.ID)
+	}
+
+	collections, err := s.ListCollections()
+	if err != nil {
+		t.Fatalf("ListCollections: %v", err)
+	}
+	seenDefault := 0
+	for _, c := range collections {
+		if c.IsDefault {
+			seenDefault++
+			if c.Name != c1.Name {
+				t.Fatalf("expected default collection %q, got %q", c1.Name, c.Name)
+			}
+		}
+	}
+	if seenDefault != 1 {
+		t.Fatalf("expected exactly one default collection marker, got %d", seenDefault)
+	}
+
+	if err := s.SetDefaultCollectionByName(c2.Name); err != nil {
+		t.Fatalf("SetDefaultCollectionByName(c2): %v", err)
+	}
+
+	defaultCollection, err = s.GetDefaultCollection()
+	if err != nil {
+		t.Fatalf("GetDefaultCollection after set: %v", err)
+	}
+	if defaultCollection.ID != c2.ID {
+		t.Fatalf("expected default %d, got %d", c2.ID, defaultCollection.ID)
+	}
+
+	if err := s.DeleteCollection(c2.Name); err != nil {
+		t.Fatalf("DeleteCollection(c2): %v", err)
+	}
+
+	if _, err := s.GetDefaultCollection(); !errors.Is(err, ErrNoDefaultCollection) {
+		t.Fatalf("expected ErrNoDefaultCollection after deleting default, got %v", err)
+	}
+}
+
 func TestCollectionSourceLifecycle(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
 	s, err := Open(dbPath)

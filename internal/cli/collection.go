@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/moonstream-labs/bmgrep/internal/config"
 	"github.com/moonstream-labs/bmgrep/internal/ingest"
 	"github.com/moonstream-labs/bmgrep/internal/paths"
 	"github.com/moonstream-labs/bmgrep/internal/store"
@@ -60,7 +60,7 @@ func newCollectionListCmd(app *App) *cobra.Command {
 
 			for _, c := range collections {
 				marker := " "
-				if app.Config.DefaultCollection == c.Name {
+				if c.IsDefault {
 					marker = "*"
 				}
 				fmt.Printf("%s %s (%d docs)\n", marker, c.Name, c.Documents)
@@ -120,9 +120,11 @@ ensure .bmgrepignore exists, and index all non-ignored .md files.`,
 			fmt.Printf("ignore: %s\n", collection.IgnoreFilePath)
 			fmt.Printf("indexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 
-			if strings.TrimSpace(app.Config.DefaultCollection) == "" {
-				app.Config.DefaultCollection = collection.Name
-				if err := config.Save(app.ConfigPath, app.Config); err != nil {
+			if _, err := app.Store.GetDefaultCollection(); err != nil {
+				if !errors.Is(err, store.ErrNoDefaultCollection) {
+					return err
+				}
+				if err := app.Store.SetDefaultCollectionByName(collection.Name); err != nil {
 					return err
 				}
 				fmt.Printf("default collection set to %q\n", collection.Name)
@@ -146,12 +148,7 @@ func newCollectionSetCmd(app *App) *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			if _, err := app.Store.GetCollectionByName(name); err != nil {
-				return err
-			}
-
-			app.Config.DefaultCollection = name
-			if err := config.Save(app.ConfigPath, app.Config); err != nil {
+			if err := app.Store.SetDefaultCollectionByName(name); err != nil {
 				return err
 			}
 
@@ -172,7 +169,8 @@ func newCollectionAddSourceCmd(app *App) *cobra.Command {
 		Use:   "add [collection]",
 		Short: "Add a file or directory source to a collection",
 		Long: `Add a source to a collection. When collection is omitted, bmgrep uses
-the default collection from config. Exactly one of --dir or --file is required.`,
+BMGREP_COLLECTION, then the persistent default collection.
+Exactly one of --dir or --file is required.`,
 		Example: strings.TrimSpace(`
   bmgrep collection add --dir ~/docs/reference
   bmgrep collection add --file ~/notes/agent-patterns.md
@@ -252,7 +250,7 @@ the default collection from config. Exactly one of --dir or --file is required.`
 		},
 	}
 
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to configured default collection)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to BMGREP_COLLECTION or persistent default collection)")
 	cmd.Flags().StringVar(&flagDir, "dir", "", "directory source to add (.md files scanned recursively)")
 	cmd.Flags().StringVar(&flagFile, "file", "", "single markdown file source to add")
 	return cmd
@@ -308,7 +306,7 @@ func newCollectionSourcesCmd(app *App) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to configured default collection)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to BMGREP_COLLECTION or persistent default collection)")
 	return cmd
 }
 
@@ -372,7 +370,7 @@ func newCollectionRemoveSourceCmd(app *App) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to configured default collection)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "target collection name (defaults to BMGREP_COLLECTION or persistent default collection)")
 	return cmd
 }
 
@@ -393,13 +391,6 @@ func newCollectionRenameCmd(app *App) *cobra.Command {
 
 			if err := app.Store.RenameCollection(oldName, newName); err != nil {
 				return err
-			}
-
-			if app.Config.DefaultCollection == oldName {
-				app.Config.DefaultCollection = newName
-				if err := config.Save(app.ConfigPath, app.Config); err != nil {
-					return err
-				}
 			}
 
 			fmt.Printf("Renamed collection %q -> %q\n", oldName, newName)
@@ -426,13 +417,6 @@ func newCollectionDeleteCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			if app.Config.DefaultCollection == name {
-				app.Config.DefaultCollection = ""
-				if err := config.Save(app.ConfigPath, app.Config); err != nil {
-					return err
-				}
-			}
-
 			fmt.Printf("Deleted collection %q\n", name)
 			return nil
 		},
@@ -440,10 +424,7 @@ func newCollectionDeleteCmd(app *App) *cobra.Command {
 }
 
 func resolveCollectionTarget(app *App, explicit string) (store.Collection, error) {
-	if name := strings.TrimSpace(explicit); name != "" {
-		return app.Store.GetCollectionByName(name)
-	}
-	return app.requireDefaultCollection()
+	return app.resolveCollection(explicit)
 }
 
 func resolveSourcePath(input string) (string, os.FileInfo, error) {
