@@ -51,8 +51,8 @@ Modes:
   Sample (default)  Ranked files with line-numbered excerpt windows.
   Rank (--rank N)   Index-only triage: path, line count, match count.
   --rank cannot be combined with --limit, --lines, or --samples.
-  --meta            Surface title/description from YAML frontmatter
-                    (sample mode shows title only).
+  --meta            Surface title/description/references from YAML frontmatter
+                    (sample mode shows title/references only).
                     source_url is intentionally omitted.
 
 Term matching:
@@ -239,7 +239,7 @@ new/changed files and remove deleted/ignored ones.`,
 							continue
 						}
 						meta := search.ExtractFrontmatter(raw)
-						if meta.Title == "" && meta.Description == "" {
+						if meta.Title == "" && meta.Description == "" && meta.References <= 0 {
 							continue
 						}
 						metaByPath[d.Path] = meta
@@ -291,7 +291,7 @@ new/changed files and remove deleted/ignored ones.`,
 				results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
 				if flagMeta {
 					meta := search.ExtractFrontmatter(d.RawContent)
-					if meta.Title != "" {
+					if meta.Title != "" || meta.References > 0 {
 						metaByPath[d.Path] = meta
 					}
 				}
@@ -313,7 +313,7 @@ new/changed files and remove deleted/ignored ones.`,
 	root.Flags().IntVarP(&flagSamples, "samples", "s", defaultSamples, "non-overlapping sample windows per result")
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
 	root.Flags().StringVar(&flagMatch, "match", string(search.MatchAuto), "term matching: all (AND), any (OR), or auto (AND first, OR fallback on zero multi-term hits; prints fallback marker)")
-	root.Flags().BoolVar(&flagMeta, "meta", false, "show frontmatter metadata (rank: title+description, sample: title only; source_url omitted)")
+	root.Flags().BoolVar(&flagMeta, "meta", false, "show frontmatter metadata (rank: title+description+references, sample: title+references; source_url omitted)")
 	root.Flags().StringVar(&flagCollection, "collection", "", "query collection override (non-persistent; also supports BMGREP_COLLECTION)")
 
 	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagDB))

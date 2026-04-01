@@ -85,3 +85,46 @@ func TestExtractFrontmatterMissingCloserReturnsEmpty(t *testing.T) {
 		t.Fatalf("expected empty meta when frontmatter is unterminated, got %+v", meta)
 	}
 }
+
+func TestExtractFrontmatterReferences(t *testing.T) {
+	raw := "---\n" +
+		"title: Pattern Syntax\n" +
+		"references: 15\n" +
+		"---\n\n" +
+		"content\n"
+
+	meta := ExtractFrontmatter(raw)
+	if meta.Title != "Pattern Syntax" {
+		t.Fatalf("title mismatch: got %q", meta.Title)
+	}
+	if meta.References != 15 {
+		t.Fatalf("references mismatch: got %d want 15", meta.References)
+	}
+}
+
+func TestExtractFrontmatterReferencesQuotedValue(t *testing.T) {
+	raw := "---\n" +
+		"references: \"7\"\n" +
+		"---\n\n" +
+		"content\n"
+
+	meta := ExtractFrontmatter(raw)
+	if meta.References != 7 {
+		t.Fatalf("quoted references mismatch: got %d want 7", meta.References)
+	}
+}
+
+func TestExtractFrontmatterReferencesInvalidOrNonPositive(t *testing.T) {
+	cases := []string{
+		"---\nreferences: many\n---\n",
+		"---\nreferences: 0\n---\n",
+		"---\nreferences: -2\n---\n",
+	}
+
+	for _, raw := range cases {
+		meta := ExtractFrontmatter(raw)
+		if meta.References != 0 {
+			t.Fatalf("expected references=0 for %q, got %d", raw, meta.References)
+		}
+	}
+}

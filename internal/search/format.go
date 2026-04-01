@@ -55,6 +55,9 @@ func FormatRankOutputWithOptions(docs []store.RankedDoc, total int, opts RankOut
 			if meta.Description != "" {
 				fmt.Fprintf(&b, "    description: %s\n", meta.Description)
 			}
+			if meta.References > 0 {
+				fmt.Fprintf(&b, "    references: %d\n", meta.References)
+			}
 		}
 	}
 	return b.String()
@@ -114,6 +117,9 @@ func FormatSampleOutputWithOptions(results []SampleResult, total int, opts Sampl
 			meta := opts.MetaByPath[r.Path]
 			if meta.Title != "" {
 				fmt.Fprintf(&b, "    title: %s\n", meta.Title)
+			}
+			if meta.References > 0 {
+				fmt.Fprintf(&b, "    references: %d\n", meta.References)
 			}
 		}
 

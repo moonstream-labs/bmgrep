@@ -1,16 +1,21 @@
 package search
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // DocMeta is optional metadata extracted from top-of-file YAML frontmatter.
 type DocMeta struct {
 	Title       string
 	Description string
+	References  int
 }
 
 // ExtractFrontmatter parses strict single-line YAML frontmatter fields from raw
 // markdown content. It recognizes only top-of-file frontmatter delimited by
-// ---/--- (or ---/...) and currently extracts only title and description.
+// ---/--- (or ---/...) and currently extracts title, description, and
+// references.
 func ExtractFrontmatter(raw string) DocMeta {
 	if raw == "" {
 		return DocMeta{}
@@ -48,6 +53,10 @@ func ExtractFrontmatter(raw string) DocMeta {
 			meta.Title = value
 		case "description":
 			meta.Description = value
+		case "references":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				meta.References = n
+			}
 		}
 	}
 

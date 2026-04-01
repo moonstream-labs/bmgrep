@@ -138,6 +138,7 @@ func TestFormatRankOutputWithMeta(t *testing.T) {
 				"/tmp/a.md": {
 					Title:       "Authentication Middleware Guide",
 					Description: "How to configure and customize authentication middleware.",
+					References:  15,
 				},
 			},
 		},
@@ -148,6 +149,9 @@ func TestFormatRankOutputWithMeta(t *testing.T) {
 	}
 	if !strings.Contains(out, "    description: How to configure and customize authentication middleware.") {
 		t.Fatalf("missing rank description metadata: %q", out)
+	}
+	if !strings.Contains(out, "    references: 15") {
+		t.Fatalf("missing rank references metadata: %q", out)
 	}
 }
 
@@ -164,6 +168,7 @@ func TestFormatSampleOutputWithMetaShowsTitleOnly(t *testing.T) {
 				"/tmp/a.md": {
 					Title:       "Authentication Middleware Guide",
 					Description: "This should not be shown in sample mode",
+					References:  3,
 				},
 			},
 		},
@@ -172,7 +177,30 @@ func TestFormatSampleOutputWithMetaShowsTitleOnly(t *testing.T) {
 	if !strings.Contains(out, "    title: Authentication Middleware Guide") {
 		t.Fatalf("missing sample title metadata: %q", out)
 	}
+	if !strings.Contains(out, "    references: 3") {
+		t.Fatalf("missing sample references metadata: %q", out)
+	}
 	if strings.Contains(out, "description:") {
 		t.Fatalf("sample mode should not show description metadata: %q", out)
+	}
+}
+
+func TestFormatMetaOmitsZeroReferences(t *testing.T) {
+	out := FormatRankOutputWithOptions(
+		[]store.RankedDoc{{Path: "/tmp/a.md", LineCount: 10, Matches: 3}},
+		1,
+		RankOutputOptions{
+			ShowMeta: true,
+			MetaByPath: map[string]DocMeta{
+				"/tmp/a.md": {
+					Title:      "Guide",
+					References: 0,
+				},
+			},
+		},
+	)
+
+	if strings.Contains(out, "references:") {
+		t.Fatalf("did not expect references line for zero value: %q", out)
 	}
 }
