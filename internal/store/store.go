@@ -10,12 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/moonstream-labs/bmgrep/internal/frontmatter"
+
 	_ "modernc.org/sqlite"
 )
 
 const (
 	collectionFTSTablePrefix   = "docs_fts_c"
 	collectionVocabTablePrefix = "docs_vocab_c"
+	titleBM25Weight            = 10.0
+	bodyBM25Weight             = 1.0
 
 	SourceTypeDirectory = "dir"
 	SourceTypeFile      = "file"
@@ -192,6 +196,9 @@ func (s *Store) ensureSchema() error {
 	if err := s.migrateLegacyGlobalFTS(); err != nil {
 		return err
 	}
+	if err := s.migrateCollectionFTSTwoColumn(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -359,6 +366,110 @@ func (s *Store) migrateLegacyGlobalFTS() error {
 	})
 }
 
+func (s *Store) migrateCollectionFTSTwoColumn() error {
+	return s.RunInTransaction(func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT id FROM collections ORDER BY id ASC`)
+		if err != nil {
+			return fmt.Errorf("list collections for fts shard migration: %w", err)
+		}
+		defer rows.Close()
+
+		var collectionIDs []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("scan collection id for fts shard migration: %w", err)
+			}
+			collectionIDs = append(collectionIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate collection ids for fts shard migration: %w", err)
+		}
+
+		for _, collectionID := range collectionIDs {
+			needsMigration, err := collectionFTSNeedsTwoColumnTx(tx, collectionID)
+			if err != nil {
+				return err
+			}
+			if needsMigration {
+				if err := s.DropCollectionSearchIndexTx(tx, collectionID); err != nil {
+					return fmt.Errorf("drop legacy collection fts shard for migration: %w", err)
+				}
+				if err := s.RebuildCollectionSearchIndexTx(tx, collectionID); err != nil {
+					return fmt.Errorf("rebuild collection fts shard for migration: %w", err)
+				}
+				continue
+			}
+
+			if err := s.EnsureCollectionSearchIndexTx(tx, collectionID); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+func collectionFTSNeedsTwoColumnTx(tx *sql.Tx, collectionID int64) (bool, error) {
+	ftsName, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return false, err
+	}
+
+	var exists int
+	err = tx.QueryRow(`
+		SELECT 1
+		FROM sqlite_master
+		WHERE type = 'table'
+		  AND name = ?
+		LIMIT 1
+	`, ftsName).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, nil
+		}
+		return false, fmt.Errorf("check collection fts shard existence: %w", err)
+	}
+
+	pragma := fmt.Sprintf(`PRAGMA table_info(%s)`, ftsIdent)
+	rows, err := tx.Query(pragma)
+	if err != nil {
+		return false, fmt.Errorf("inspect collection fts shard columns: %w", err)
+	}
+	defer rows.Close()
+
+	hasTitle := false
+	hasCleanContent := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan collection fts shard column: %w", err)
+		}
+		switch name {
+		case "title":
+			hasTitle = true
+		case "clean_content":
+			hasCleanContent = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate collection fts shard columns: %w", err)
+	}
+
+	if !hasTitle || !hasCleanContent {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (s *Store) hasLegacyGlobalFTSArtifacts() (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
@@ -460,6 +571,7 @@ func (s *Store) EnsureCollectionSearchIndexTx(tx *sql.Tx, collectionID int64) er
 
 	createFTS := fmt.Sprintf(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS %s USING fts5(
+			title,
 			clean_content,
 			tokenize='unicode61'
 		)
@@ -495,14 +607,42 @@ func (s *Store) RebuildCollectionSearchIndexTx(tx *sql.Tx, collectionID int64) e
 		return fmt.Errorf("clear collection fts index: %w", err)
 	}
 
-	rebuildStmt := fmt.Sprintf(`
-		INSERT INTO %s(rowid, clean_content)
-		SELECT id, clean_content
+	rows, err := tx.Query(`
+		SELECT id, raw_content, clean_content
 		FROM documents
 		WHERE collection_id = ?
+	`, collectionID)
+	if err != nil {
+		return fmt.Errorf("list documents for fts rebuild: %w", err)
+	}
+	defer rows.Close()
+
+	insertStmt := fmt.Sprintf(`
+		INSERT INTO %s(rowid, title, clean_content)
+		VALUES(?, ?, ?)
 	`, ftsIdent)
-	if _, err := tx.Exec(rebuildStmt, collectionID); err != nil {
-		return fmt.Errorf("rebuild collection fts index: %w", err)
+	stmt, err := tx.Prepare(insertStmt)
+	if err != nil {
+		return fmt.Errorf("prepare collection fts rebuild insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for rows.Next() {
+		var (
+			id           int64
+			rawContent   string
+			cleanContent string
+		)
+		if err := rows.Scan(&id, &rawContent, &cleanContent); err != nil {
+			return fmt.Errorf("scan document for fts rebuild: %w", err)
+		}
+		title := frontmatter.Extract(rawContent).Title
+		if _, err := stmt.Exec(id, title, cleanContent); err != nil {
+			return fmt.Errorf("insert collection fts row: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate documents for fts rebuild: %w", err)
 	}
 
 	return nil
@@ -1033,11 +1173,11 @@ func (s *Store) SearchRankedDocsWithTerms(collectionID int64, ftsQuery string, q
 		JOIN documents d ON d.id = %s.rowid
 		WHERE d.collection_id = ?
 		  AND %s MATCH ?
-		ORDER BY bm25(%s) ASC
+		ORDER BY bm25(%s, ?, ?) ASC
 		LIMIT ?
 	`, ftsIdent, ftsIdent, ftsIdent, ftsIdent)
 
-	rows, err := s.db.Query(query, collectionID, ftsQuery, limit)
+	rows, err := s.db.Query(query, collectionID, ftsQuery, titleBM25Weight, bodyBM25Weight, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("run ranked search: %w", err)
 	}
@@ -1099,11 +1239,11 @@ func (s *Store) SearchSampleDocs(collectionID int64, ftsQuery string, limit int)
 		JOIN documents d ON d.id = %s.rowid
 		WHERE d.collection_id = ?
 		  AND %s MATCH ?
-		ORDER BY bm25(%s) ASC
+		ORDER BY bm25(%s, ?, ?) ASC
 		LIMIT ?
 	`, ftsIdent, ftsIdent, ftsIdent, ftsIdent)
 
-	rows, err := s.db.Query(query, collectionID, ftsQuery, limit)
+	rows, err := s.db.Query(query, collectionID, ftsQuery, titleBM25Weight, bodyBM25Weight, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("run sample search: %w", err)
 	}

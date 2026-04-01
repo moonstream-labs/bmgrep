@@ -49,7 +49,8 @@ func Execute() error {
 
 Modes:
   Sample (default)  Ranked files with line-numbered excerpt windows.
-  Rank (--rank N)   Index-only triage: path, line count, match count.
+  Rank (--rank N)   Index-only triage: path, line count, match count
+                    (title-weighted BM25 when frontmatter title exists).
   --rank cannot be combined with --limit, --lines, or --samples.
   --meta            Surface title/description/references from YAML frontmatter
                     (sample mode shows title/references only).
@@ -284,13 +285,21 @@ new/changed files and remove deleted/ignored ones.`,
 				metaByPath = make(map[string]search.DocMeta, len(docs))
 			}
 			for _, d := range docs {
+				var meta search.DocMeta
+				if flagMeta {
+					meta = search.ExtractFrontmatter(d.RawContent)
+				}
+
 				windows := search.ExtractTopWindows(d.RawContent, queryTerms, weights, flagLines, flagSamples)
 				if len(windows) == 0 {
+					if flagMeta && (meta.Title != "" || meta.References > 0) {
+						results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
+						metaByPath[d.Path] = meta
+					}
 					continue
 				}
 				results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
 				if flagMeta {
-					meta := search.ExtractFrontmatter(d.RawContent)
 					if meta.Title != "" || meta.References > 0 {
 						metaByPath[d.Path] = meta
 					}

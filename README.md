@@ -87,7 +87,7 @@ Flags:
 
 ### Rank mode
 
-Returns an index-first ranked list with line counts and match counts. By default, rank mode is a pure FTS5 index lookup. With `--meta`, bmgrep also reads frontmatter metadata from stored raw document content for displayed results.
+Returns an index-first ranked list with line counts and match counts. Ranking uses weighted BM25 over indexed title and body content (frontmatter title, when present, is boosted above body-only mentions). With `--meta`, bmgrep also reads frontmatter metadata from stored raw document content for displayed results.
 
 ```
 $ bmgrep "authentication middleware" --rank 5

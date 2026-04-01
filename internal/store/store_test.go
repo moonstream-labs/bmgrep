@@ -44,6 +44,32 @@ func TestCreateCollectionEnsuresCollectionSearchIndex(t *testing.T) {
 	}
 }
 
+func TestCollectionSearchIndexSchemaIncludesTitleColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	cols, err := collectionFTSColumns(s, c.ID)
+	if err != nil {
+		t.Fatalf("collectionFTSColumns: %v", err)
+	}
+	if !containsString(cols, "title") {
+		t.Fatalf("expected title column in collection FTS schema, got %v", cols)
+	}
+	if !containsString(cols, "clean_content") {
+		t.Fatalf("expected clean_content column in collection FTS schema, got %v", cols)
+	}
+}
+
 func TestDefaultCollectionLifecycle(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
 	s, err := Open(dbPath)
@@ -462,6 +488,104 @@ func TestOpenMigratesAndDropsLegacyGlobalFTSArtifacts(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesLegacyCollectionFTSShardToTwoColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	root := t.TempDir()
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	docPath := filepath.Join(root, "docs", "pattern-syntax.md")
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         docPath,
+		RelPath:      "pattern-syntax.md",
+		FileHash:     "h1",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    5,
+		RawContent:   "---\ntitle: Pattern Syntax\n---\n\nUnrelated body.\n",
+		CleanContent: "Unrelated body.\n",
+	})
+
+	if err := s.RunInTransaction(func(tx *sql.Tx) error {
+		if err := s.DropCollectionSearchIndexTx(tx, c.ID); err != nil {
+			return err
+		}
+
+		_, ftsIdent, _, vocabIdent, err := collectionSearchIndexIdents(c.ID)
+		if err != nil {
+			return err
+		}
+
+		legacyFTS := fmt.Sprintf(`
+			CREATE VIRTUAL TABLE %s USING fts5(
+				clean_content,
+				tokenize='unicode61'
+			)
+		`, ftsIdent)
+		if _, err := tx.Exec(legacyFTS); err != nil {
+			return err
+		}
+
+		legacyVocab := fmt.Sprintf(`
+			CREATE VIRTUAL TABLE %s USING fts5vocab(%s, 'instance')
+		`, vocabIdent, ftsIdent)
+		if _, err := tx.Exec(legacyVocab); err != nil {
+			return err
+		}
+
+		legacyPopulate := fmt.Sprintf(`
+			INSERT INTO %s(rowid, clean_content)
+			SELECT id, clean_content
+			FROM documents
+			WHERE collection_id = ?
+		`, ftsIdent)
+		if _, err := tx.Exec(legacyPopulate, c.ID); err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatalf("seed legacy one-column collection fts shard: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer s2.Close()
+
+	cols, err := collectionFTSColumns(s2, c.ID)
+	if err != nil {
+		t.Fatalf("collectionFTSColumns: %v", err)
+	}
+	if !containsString(cols, "title") {
+		t.Fatalf("expected migrated shard to include title column, got %v", cols)
+	}
+
+	ranked, total, err := s2.SearchRankedDocs(c.ID, "pattern syntax", 5)
+	if err != nil {
+		t.Fatalf("SearchRankedDocs after shard migration: %v", err)
+	}
+	if total != 1 || len(ranked) != 1 {
+		t.Fatalf("expected one title-only match after shard migration, total=%d len=%d", total, len(ranked))
+	}
+	if ranked[0].Path != docPath {
+		t.Fatalf("unexpected ranked path: got %q want %q", ranked[0].Path, docPath)
+	}
+}
+
 func TestTermIDFWeightsScopedToCollection(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
 	s, err := Open(dbPath)
@@ -742,6 +866,142 @@ func TestGetRawContentByDocIDsScopedToCollection(t *testing.T) {
 	}
 }
 
+func TestSearchRankedDocsUsesTitleWeightedBM25(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	titlePath := filepath.Join(root, "docs", "pattern-syntax.md")
+	bodyPath := filepath.Join(root, "docs", "tutorial.md")
+
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         titlePath,
+		RelPath:      "pattern-syntax.md",
+		FileHash:     "h-title",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    6,
+		RawContent:   "---\ntitle: Pattern Syntax\n---\n\nReference overview.\n",
+		CleanContent: "Reference overview.\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         bodyPath,
+		RelPath:      "tutorial.md",
+		FileHash:     "h-body",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "pattern syntax pattern syntax pattern syntax pattern syntax\n",
+		CleanContent: "pattern syntax pattern syntax pattern syntax pattern syntax\n",
+	})
+
+	if err := rebuildCollectionIndex(t, s, c.ID); err != nil {
+		t.Fatalf("rebuild index: %v", err)
+	}
+
+	ranked, total, err := s.SearchRankedDocs(c.ID, "pattern syntax", 2)
+	if err != nil {
+		t.Fatalf("SearchRankedDocs: %v", err)
+	}
+	if total != 2 || len(ranked) != 2 {
+		t.Fatalf("unexpected ranked result size: total=%d len=%d", total, len(ranked))
+	}
+	if ranked[0].Path != titlePath {
+		t.Fatalf("expected title-matching doc first, got %q", ranked[0].Path)
+	}
+
+	rankedWithTerms, _, err := s.SearchRankedDocsWithTerms(c.ID, "pattern syntax", []string{"pattern", "syntax"}, 2, true)
+	if err != nil {
+		t.Fatalf("SearchRankedDocsWithTerms: %v", err)
+	}
+
+	var titleDoc RankedDoc
+	found := false
+	for _, doc := range rankedWithTerms {
+		if doc.Path == titlePath {
+			titleDoc = doc
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("title doc missing from ranked-with-terms results")
+	}
+	if titleDoc.MatchedTerms != 2 {
+		t.Fatalf("expected title doc to cover 2 terms, got %d", titleDoc.MatchedTerms)
+	}
+	if titleDoc.Matches < 2 {
+		t.Fatalf("expected title doc to have at least 2 term hits from title, got %d", titleDoc.Matches)
+	}
+}
+
+func TestSearchSampleDocsUsesTitleWeightedBM25(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c, err := s.CreateCollection("docs", filepath.Join(root, "docs"), filepath.Join(root, "docs", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	titlePath := filepath.Join(root, "docs", "pattern-syntax.md")
+	bodyPath := filepath.Join(root, "docs", "tutorial.md")
+
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         titlePath,
+		RelPath:      "pattern-syntax.md",
+		FileHash:     "h-title",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    6,
+		RawContent:   "---\ntitle: Pattern Syntax\n---\n\nReference overview only.\n",
+		CleanContent: "Reference overview only.\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         bodyPath,
+		RelPath:      "tutorial.md",
+		FileHash:     "h-body",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "pattern syntax pattern syntax pattern syntax pattern syntax\n",
+		CleanContent: "pattern syntax pattern syntax pattern syntax pattern syntax\n",
+	})
+
+	if err := rebuildCollectionIndex(t, s, c.ID); err != nil {
+		t.Fatalf("rebuild index: %v", err)
+	}
+
+	docs, total, err := s.SearchSampleDocs(c.ID, "pattern syntax", 2)
+	if err != nil {
+		t.Fatalf("SearchSampleDocs: %v", err)
+	}
+	if total != 2 || len(docs) != 2 {
+		t.Fatalf("unexpected sample result size: total=%d len=%d", total, len(docs))
+	}
+	if docs[0].Path != titlePath {
+		t.Fatalf("expected title-matching doc first in sample docs, got %q", docs[0].Path)
+	}
+}
+
 func mustUpsertDoc(t *testing.T, s *Store, doc DocumentRecord) {
 	t.Helper()
 	err := s.RunInTransaction(func(tx *sql.Tx) error {
@@ -807,4 +1067,48 @@ func indexRowCount(s *Store, collectionID int64) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func collectionFTSColumns(s *Store, collectionID int64) ([]string, error) {
+	_, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
+	if err != nil {
+		return nil, err
+	}
+
+	query := fmt.Sprintf(`PRAGMA table_info(%s)`, ftsIdent)
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
