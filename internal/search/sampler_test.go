@@ -179,3 +179,52 @@ func TestExtractTopWindowsIgnoresFenceMarkerLinesForScoring(t *testing.T) {
 		t.Fatalf("expected prose line (4), got line %d", windows[0].StartLine)
 	}
 }
+
+func TestExtractTopWindowsSkipsFrontmatterWindowStarts(t *testing.T) {
+	raw := "---\n" +
+		"title: pattern syntax\n" +
+		"source_url: https://example.com\n" +
+		"---\n" +
+		"\n" +
+		"# Pattern Syntax\n" +
+		"\n" +
+		"Pattern syntax appears in prose here.\n"
+
+	terms := []string{"pattern", "syntax"}
+	// Requested window size is larger than remaining lines after frontmatter.
+	// Sampler should clamp and still return a post-frontmatter window.
+	windows := ExtractTopWindows(raw, terms, uniformWeights(terms), 6, 1)
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].StartLine <= 4 {
+		t.Fatalf("window should start after frontmatter, got line %d", windows[0].StartLine)
+	}
+}
+
+func TestExtractTopWindowsRespectsWindowSizeAfterFrontmatter(t *testing.T) {
+	raw := "---\n" +
+		"title: syntax guide\n" +
+		"source_url: https://example.com\n" +
+		"---\n" +
+		"\n" +
+		"Pattern syntax intro.\n" +
+		"Pattern syntax details.\n" +
+		"Pattern syntax examples.\n" +
+		"More prose.\n"
+
+	terms := []string{"pattern", "syntax"}
+	windows := ExtractTopWindows(raw, terms, uniformWeights(terms), 3, 1)
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].StartLine <= 4 {
+		t.Fatalf("window should start after frontmatter, got line %d", windows[0].StartLine)
+	}
+	if got := windows[0].EndLine - windows[0].StartLine + 1; got != 3 {
+		t.Fatalf("expected window size 3, got %d", got)
+	}
+	if len(windows[0].Lines) != 3 {
+		t.Fatalf("expected 3 display lines, got %d", len(windows[0].Lines))
+	}
+}

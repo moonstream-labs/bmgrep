@@ -35,8 +35,9 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 		return nil
 	}
 
-	if linesPerWindow > len(rawLines) {
-		linesPerWindow = len(rawLines)
+	effectiveLinesPerWindow := linesPerWindow
+	if effectiveLinesPerWindow > len(rawLines) {
+		effectiveLinesPerWindow = len(rawLines)
 	}
 
 	termIndex := make(map[string]int, len(terms))
@@ -56,6 +57,17 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 	}
 
 	frontmatterEnd := frontmatterCloserLine(rawLines)
+	minStart := 0
+	if frontmatterEnd >= 0 {
+		minStart = frontmatterEnd + 1
+	}
+	if minStart >= len(rawLines) {
+		return nil
+	}
+	if effectiveLinesPerWindow > len(rawLines)-minStart {
+		effectiveLinesPerWindow = len(rawLines) - minStart
+	}
+
 	inFence := false
 	fenceChar := byte(0)
 	fenceLen := 0
@@ -89,8 +101,8 @@ func ExtractTopWindows(raw string, terms []string, weights map[string]float64, l
 	}
 
 	var candidates []SampleWindow
-	for start := 0; start+linesPerWindow <= len(rawLines); start++ {
-		end := start + linesPerWindow // exclusive
+	for start := minStart; start+effectiveLinesPerWindow <= len(rawLines); start++ {
+		end := start + effectiveLinesPerWindow // exclusive
 		score := prefixScores[end] - prefixScores[start]
 		if score == 0 {
 			continue
