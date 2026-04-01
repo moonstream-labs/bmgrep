@@ -16,6 +16,8 @@ import (
 )
 
 func newCollectionCmd(app *App) *cobra.Command {
+	var flagJSON bool
+
 	collectionCmd := &cobra.Command{
 		Use:   "collection",
 		Short: "Manage indexed markdown collections",
@@ -28,31 +30,50 @@ directory/file sources from anywhere on disk.`,
 	}
 
 	collectionCmd.AddCommand(
-		newCollectionListCmd(app),
+		newCollectionListCmd(app, &flagJSON),
 		newCollectionCreateCmd(app),
 		newCollectionAddSourceCmd(app),
-		newCollectionSourcesCmd(app),
+		newCollectionSourcesCmd(app, &flagJSON),
 		newCollectionRemoveSourceCmd(app),
 		newCollectionSetCmd(app),
 		newCollectionRenameCmd(app),
 		newCollectionDeleteCmd(app),
 	)
 
+	collectionCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "output machine-readable JSON")
+
 	return collectionCmd
 }
 
-func newCollectionListCmd(app *App) *cobra.Command {
+func newCollectionListCmd(app *App, jsonFlag *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List all collections",
 		Example: strings.TrimSpace(`
   bmgrep collection list
+  bmgrep collection list --json
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			collections, err := app.Store.ListCollections()
 			if err != nil {
 				return err
 			}
+
+			if *jsonFlag {
+				payload := collectionListJSON{
+					Collections: make([]collectionSummaryJSON, 0, len(collections)),
+				}
+				for _, collection := range collections {
+					payload.Collections = append(payload.Collections, collectionSummaryJSON{
+						Name:          collection.Name,
+						RootPath:      collection.RootPath,
+						DocumentCount: collection.Documents,
+						IsDefault:     collection.IsDefault,
+					})
+				}
+				return writeJSON(cmd.OutOrStdout(), payload)
+			}
+
 			if len(collections) == 0 {
 				fmt.Println("No collections found.")
 				return nil
@@ -258,7 +279,7 @@ Exactly one of --dir or --file is required.`,
 	return cmd
 }
 
-func newCollectionSourcesCmd(app *App) *cobra.Command {
+func newCollectionSourcesCmd(app *App, jsonFlag *bool) *cobra.Command {
 	var flagCollection string
 
 	cmd := &cobra.Command{
@@ -267,6 +288,8 @@ func newCollectionSourcesCmd(app *App) *cobra.Command {
 		Example: strings.TrimSpace(`
   bmgrep collection sources
   bmgrep collection sources docs-v2
+  bmgrep collection sources --json
+  bmgrep collection sources docs-v2 --json
 `),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -287,6 +310,24 @@ func newCollectionSourcesCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			if *jsonFlag {
+				payload := collectionSourcesJSON{
+					Collection: collection.Name,
+					Sources:    make([]collectionSourceJSON, 0, len(sources)),
+				}
+				for _, source := range sources {
+					payload.Sources = append(payload.Sources, collectionSourceJSON{
+						ID:         source.ID,
+						Type:       source.SourceType,
+						Path:       source.SourcePath,
+						IgnoreFile: source.IgnoreFilePath,
+						Enabled:    source.Enabled,
+					})
+				}
+				return writeJSON(cmd.OutOrStdout(), payload)
+			}
+
 			if len(sources) == 0 {
 				fmt.Printf("Collection %q has no configured sources.\n", collection.Name)
 				return nil

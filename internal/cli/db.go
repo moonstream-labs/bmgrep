@@ -12,6 +12,8 @@ import (
 )
 
 func newDBCmd(app *App, flagDB *string) *cobra.Command {
+	var flagJSON bool
+
 	dbCmd := &cobra.Command{
 		Use:   "db",
 		Short: "Manage bmgrep database location and health",
@@ -25,9 +27,11 @@ Workspace-local state lives in <workspace>/.bmgrep/bmgrep.db.`,
 
 	dbCmd.AddCommand(
 		newDBInitCmd(),
-		newDBCurrentCmd(flagDB),
+		newDBCurrentCmd(flagDB, &flagJSON),
 		newDBDoctorCmd(flagDB),
 	)
+
+	dbCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "output machine-readable JSON")
 
 	return dbCmd
 }
@@ -76,18 +80,28 @@ func newDBInitCmd() *cobra.Command {
 	}
 }
 
-func newDBCurrentCmd(flagDB *string) *cobra.Command {
+func newDBCurrentCmd(flagDB *string, jsonFlag *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
 		Short: "Show active database path and resolution source",
 		Example: strings.TrimSpace(`
   bmgrep db current
   bmgrep db current --db /tmp/bmgrep.db
+  bmgrep db current --json
+  bmgrep db current --db /tmp/bmgrep.db --json
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved, err := resolveDBRuntimePath(strings.TrimSpace(*flagDB))
 			if err != nil {
 				return err
+			}
+
+			if *jsonFlag {
+				return writeJSON(cmd.OutOrStdout(), dbCurrentJSON{
+					DBPath:    resolved.DBPath,
+					DBSource:  resolved.DBSource,
+					Workspace: resolved.Workspace,
+				})
 			}
 
 			fmt.Printf("db: %s\n", resolved.DBPath)

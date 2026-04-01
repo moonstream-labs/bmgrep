@@ -197,10 +197,10 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 | Layer | Commands | Purpose |
 |---|---|---|
 | Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples`, `--match`, `--collection` | Ranked retrieval and excerpt sampling |
-| Collections | `collection create/list/set/rename/delete` | Define and select logical search scopes |
-| Source curation | `collection add`, `collection sources`, `collection remove-source` | Curate multi-source collections across filesystem paths |
+| Collections | `collection create/list/set/rename/delete`, `collection list --json` | Define and select logical search scopes |
+| Source curation | `collection add`, `collection sources`, `collection sources --json`, `collection remove-source` | Curate multi-source collections across filesystem paths |
 | Ignore | `ignore list/path/add/remove` | Manage ignore patterns on the default collection's primary directory source |
-| Database | `db init/current/doctor` | Initialize workspace DBs, inspect resolution, and validate DB health |
+| Database | `db init/current/doctor`, `db current --json` | Initialize workspace DBs, inspect resolution, and validate DB health |
 
 ## Collection management
 
@@ -236,6 +236,24 @@ bmgrep collection rename docs docs-v2
 # Delete a collection and all its indexed documents
 bmgrep collection delete old-docs
 ```
+
+## Machine-readable introspection
+
+Use `--json` on state-inspection commands when another tool needs to consume bmgrep output programmatically.
+
+```bash
+# List collections with root_path, document_count, and default marker
+bmgrep collection list --json
+
+# List configured sources for a collection (id/type/path/ignore_file/enabled)
+bmgrep collection sources --json
+bmgrep collection sources docs-v2 --json
+
+# Resolve active runtime database path/source/workspace
+bmgrep db current --json
+```
+
+When `--json` is set, bmgrep writes a single JSON object to stdout. Errors still go to stderr.
 
 ## Database resolution and workspace scope
 
