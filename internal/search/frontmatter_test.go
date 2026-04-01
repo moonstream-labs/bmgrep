@@ -86,10 +86,10 @@ func TestExtractFrontmatterMissingCloserReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestExtractFrontmatterReferences(t *testing.T) {
+func TestExtractFrontmatterBacklinks(t *testing.T) {
 	raw := "---\n" +
 		"title: Pattern Syntax\n" +
-		"references: 15\n" +
+		"backlinks: 15\n" +
 		"---\n\n" +
 		"content\n"
 
@@ -97,34 +97,46 @@ func TestExtractFrontmatterReferences(t *testing.T) {
 	if meta.Title != "Pattern Syntax" {
 		t.Fatalf("title mismatch: got %q", meta.Title)
 	}
-	if meta.References != 15 {
-		t.Fatalf("references mismatch: got %d want 15", meta.References)
+	if meta.Backlinks != 15 {
+		t.Fatalf("backlinks mismatch: got %d want 15", meta.Backlinks)
 	}
 }
 
-func TestExtractFrontmatterReferencesQuotedValue(t *testing.T) {
+func TestExtractFrontmatterBacklinksQuotedValue(t *testing.T) {
 	raw := "---\n" +
-		"references: \"7\"\n" +
+		"backlinks: \"7\"\n" +
 		"---\n\n" +
 		"content\n"
 
 	meta := ExtractFrontmatter(raw)
-	if meta.References != 7 {
-		t.Fatalf("quoted references mismatch: got %d want 7", meta.References)
+	if meta.Backlinks != 7 {
+		t.Fatalf("quoted backlinks mismatch: got %d want 7", meta.Backlinks)
 	}
 }
 
-func TestExtractFrontmatterReferencesInvalidOrNonPositive(t *testing.T) {
+func TestExtractFrontmatterBacklinksInvalidOrNonPositive(t *testing.T) {
 	cases := []string{
-		"---\nreferences: many\n---\n",
-		"---\nreferences: 0\n---\n",
-		"---\nreferences: -2\n---\n",
+		"---\nbacklinks: many\n---\n",
+		"---\nbacklinks: 0\n---\n",
+		"---\nbacklinks: -2\n---\n",
 	}
 
 	for _, raw := range cases {
 		meta := ExtractFrontmatter(raw)
-		if meta.References != 0 {
-			t.Fatalf("expected references=0 for %q, got %d", raw, meta.References)
+		if meta.Backlinks != 0 {
+			t.Fatalf("expected backlinks=0 for %q, got %d", raw, meta.Backlinks)
 		}
+	}
+}
+
+func TestExtractFrontmatterLegacyReferencesIgnored(t *testing.T) {
+	raw := "---\n" +
+		"references: 9\n" +
+		"---\n\n" +
+		"content\n"
+
+	meta := ExtractFrontmatter(raw)
+	if meta.Backlinks != 0 {
+		t.Fatalf("expected legacy references key to be ignored, got backlinks=%d", meta.Backlinks)
 	}
 }

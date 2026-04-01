@@ -9,12 +9,12 @@ import (
 type Meta struct {
 	Title       string
 	Description string
-	References  int
+	Backlinks   int
 }
 
 // Extract parses strict single-line YAML frontmatter fields from raw markdown
 // content. It recognizes only top-of-file frontmatter delimited by ---/---
-// (or ---/...) and extracts title, description, and references.
+// (or ---/...) and extracts title, description, and backlinks.
 func Extract(raw string) Meta {
 	if raw == "" {
 		return Meta{}
@@ -52,9 +52,9 @@ func Extract(raw string) Meta {
 			meta.Title = value
 		case "description":
 			meta.Description = value
-		case "references":
+		case "backlinks":
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				meta.References = n
+				meta.Backlinks = n
 			}
 		}
 	}

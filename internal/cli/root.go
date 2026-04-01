@@ -52,8 +52,8 @@ Modes:
   Rank (--rank N)   Index-only triage: path, line count, match count
                     (title-weighted BM25 when frontmatter title exists).
   --rank cannot be combined with --limit, --lines, or --samples.
-  --meta            Surface title/description/references from YAML frontmatter
-                    (sample mode shows title/references only).
+  --meta            Surface title/description/backlinks from YAML frontmatter
+                    (sample mode shows title/backlinks only).
                     source_url is intentionally omitted.
 
 Term matching:
@@ -240,7 +240,7 @@ new/changed files and remove deleted/ignored ones.`,
 							continue
 						}
 						meta := search.ExtractFrontmatter(raw)
-						if meta.Title == "" && meta.Description == "" && meta.References <= 0 {
+						if meta.Title == "" && meta.Description == "" && meta.Backlinks <= 0 {
 							continue
 						}
 						metaByPath[d.Path] = meta
@@ -292,7 +292,7 @@ new/changed files and remove deleted/ignored ones.`,
 
 				windows := search.ExtractTopWindows(d.RawContent, queryTerms, weights, flagLines, flagSamples)
 				if len(windows) == 0 {
-					if flagMeta && (meta.Title != "" || meta.References > 0) {
+					if flagMeta && (meta.Title != "" || meta.Backlinks > 0) {
 						results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
 						metaByPath[d.Path] = meta
 					}
@@ -300,7 +300,7 @@ new/changed files and remove deleted/ignored ones.`,
 				}
 				results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
 				if flagMeta {
-					if meta.Title != "" || meta.References > 0 {
+					if meta.Title != "" || meta.Backlinks > 0 {
 						metaByPath[d.Path] = meta
 					}
 				}
@@ -322,7 +322,7 @@ new/changed files and remove deleted/ignored ones.`,
 	root.Flags().IntVarP(&flagSamples, "samples", "s", defaultSamples, "non-overlapping sample windows per result")
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
 	root.Flags().StringVar(&flagMatch, "match", string(search.MatchAuto), "term matching: all (AND), any (OR), or auto (AND first, OR fallback on zero multi-term hits; prints fallback marker)")
-	root.Flags().BoolVar(&flagMeta, "meta", false, "show frontmatter metadata (rank: title+description+references, sample: title+references; source_url omitted)")
+	root.Flags().BoolVar(&flagMeta, "meta", false, "show frontmatter metadata (rank: title+description+backlinks, sample: title+backlinks; source_url omitted)")
 	root.Flags().StringVar(&flagCollection, "collection", "", "query collection override (non-persistent; also supports BMGREP_COLLECTION)")
 
 	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagDB))

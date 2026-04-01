@@ -83,7 +83,7 @@ Flags:
 | `--lines` | `-l` | 4 | Lines per excerpt window |
 | `--samples` | `-s` | 1 | Non-overlapping excerpt windows per document |
 | `--match` |  | `auto` | Term matching mode: `all` (AND), `any` (OR), `auto` (AND first, OR fallback on zero multi-term hits) |
-| `--meta` |  | `false` | Include YAML frontmatter metadata in output (rank: title + description + references, sample: title + references) |
+| `--meta` |  | `false` | Include YAML frontmatter metadata in output (rank: title + description + backlinks, sample: title + backlinks) |
 
 ### Rank mode
 
@@ -105,7 +105,7 @@ results: 5 of 12
 # Rank mode with frontmatter metadata
 bmgrep "authentication middleware" --rank 5 --meta
 
-# Sample mode with frontmatter metadata (title + references)
+# Sample mode with frontmatter metadata (title + backlinks)
 bmgrep "authentication middleware" -n 2 -l 4 -s 1 --meta
 ```
 

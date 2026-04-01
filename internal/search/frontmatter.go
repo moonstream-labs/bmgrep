@@ -10,7 +10,7 @@ import (
 type DocMeta = frontmatter.Meta
 
 // ExtractFrontmatter parses strict single-line YAML frontmatter fields from raw
-// markdown content and extracts title, description, and references.
+// markdown content and extracts title, description, and backlinks.
 func ExtractFrontmatter(raw string) DocMeta {
 	return frontmatter.Extract(raw)
 }
