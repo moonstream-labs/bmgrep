@@ -113,3 +113,69 @@ func TestExtractTopWindowsIDFWeighting(t *testing.T) {
 		t.Fatalf("expected IDF-weighted top window at line 3, got line %d", windows[0].StartLine)
 	}
 }
+
+func TestExtractTopWindowsIgnoresLinkURLTokensForScoring(t *testing.T) {
+	raw := "See [single meta variable](https://ast-grep.github.io/guide/pattern-syntax.html#meta-variable).\n" +
+		"noise\n" +
+		"Pattern syntax appears in prose here.\n"
+
+	terms := []string{"pattern", "syntax"}
+	windows := ExtractTopWindows(raw, terms, uniformWeights(terms), 1, 1)
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].StartLine != 3 {
+		t.Fatalf("expected prose line (3) to win over URL-derived tokens, got line %d", windows[0].StartLine)
+	}
+}
+
+func TestExtractTopWindowsPreservesRawDisplayLines(t *testing.T) {
+	raw := "[Pattern syntax guide](https://example.com/guide/pattern-syntax.html)\n" +
+		"noise\n"
+
+	terms := []string{"pattern", "syntax"}
+	windows := ExtractTopWindows(raw, terms, uniformWeights(terms), 1, 1)
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].StartLine != 1 {
+		t.Fatalf("expected first line window, got line %d", windows[0].StartLine)
+	}
+	if windows[0].Lines[0] != "[Pattern syntax guide](https://example.com/guide/pattern-syntax.html)" {
+		t.Fatalf("expected raw markdown line preserved, got %q", windows[0].Lines[0])
+	}
+}
+
+func TestExtractTopWindowsIgnoresFrontmatterForScoring(t *testing.T) {
+	raw := "---\n" +
+		"title: pattern syntax\n" +
+		"description: pattern syntax details\n" +
+		"---\n" +
+		"noise\n" +
+		"Pattern syntax in prose.\n"
+
+	terms := []string{"pattern", "syntax"}
+	windows := ExtractTopWindows(raw, terms, uniformWeights(terms), 1, 1)
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].StartLine != 6 {
+		t.Fatalf("expected prose line (6), got line %d", windows[0].StartLine)
+	}
+}
+
+func TestExtractTopWindowsIgnoresFenceMarkerLinesForScoring(t *testing.T) {
+	raw := "```pattern syntax\n" +
+		"code body\n" +
+		"```\n" +
+		"Pattern syntax in prose.\n"
+
+	terms := []string{"pattern", "syntax"}
+	windows := ExtractTopWindows(raw, terms, uniformWeights(terms), 1, 1)
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].StartLine != 4 {
+		t.Fatalf("expected prose line (4), got line %d", windows[0].StartLine)
+	}
+}
