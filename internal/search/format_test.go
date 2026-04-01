@@ -127,3 +127,52 @@ func TestFormatSampleOutputWithFallback(t *testing.T) {
 		t.Fatalf("missing fallback indicator: %q", out)
 	}
 }
+
+func TestFormatRankOutputWithMeta(t *testing.T) {
+	out := FormatRankOutputWithOptions(
+		[]store.RankedDoc{{Path: "/tmp/a.md", LineCount: 10, Matches: 3}},
+		1,
+		RankOutputOptions{
+			ShowMeta: true,
+			MetaByPath: map[string]DocMeta{
+				"/tmp/a.md": {
+					Title:       "Authentication Middleware Guide",
+					Description: "How to configure and customize authentication middleware.",
+				},
+			},
+		},
+	)
+
+	if !strings.Contains(out, "    title: Authentication Middleware Guide") {
+		t.Fatalf("missing rank title metadata: %q", out)
+	}
+	if !strings.Contains(out, "    description: How to configure and customize authentication middleware.") {
+		t.Fatalf("missing rank description metadata: %q", out)
+	}
+}
+
+func TestFormatSampleOutputWithMetaShowsTitleOnly(t *testing.T) {
+	out := FormatSampleOutputWithOptions(
+		[]SampleResult{{
+			Path:    "/tmp/a.md",
+			Windows: []SampleWindow{{StartLine: 3, EndLine: 4, Lines: []string{"alpha", "beta"}}},
+		}},
+		1,
+		SampleOutputOptions{
+			ShowMeta: true,
+			MetaByPath: map[string]DocMeta{
+				"/tmp/a.md": {
+					Title:       "Authentication Middleware Guide",
+					Description: "This should not be shown in sample mode",
+				},
+			},
+		},
+	)
+
+	if !strings.Contains(out, "    title: Authentication Middleware Guide") {
+		t.Fatalf("missing sample title metadata: %q", out)
+	}
+	if strings.Contains(out, "description:") {
+		t.Fatalf("sample mode should not show description metadata: %q", out)
+	}
+}

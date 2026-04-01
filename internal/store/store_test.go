@@ -656,6 +656,92 @@ func TestSearchRankedDocsWithTermsCoverageForAnyQuery(t *testing.T) {
 	}
 }
 
+func TestGetRawContentByDocIDsScopedToCollection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c1, err := s.CreateCollection("c1", filepath.Join(root, "c1"), filepath.Join(root, "c1", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create c1: %v", err)
+	}
+	c2, err := s.CreateCollection("c2", filepath.Join(root, "c2"), filepath.Join(root, "c2", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create c2: %v", err)
+	}
+
+	c1Path := filepath.Join(root, "c1", "a.md")
+	c2Path := filepath.Join(root, "c2", "b.md")
+
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c1.ID,
+		Path:         c1Path,
+		RelPath:      "a.md",
+		FileHash:     "h1",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "c1-raw\n",
+		CleanContent: "c1-raw\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c2.ID,
+		Path:         c2Path,
+		RelPath:      "b.md",
+		FileHash:     "h2",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "c2-raw\n",
+		CleanContent: "c2-raw\n",
+	})
+
+	c1Docs, err := s.ListDocumentsForCollection(c1.ID)
+	if err != nil {
+		t.Fatalf("ListDocumentsForCollection(c1): %v", err)
+	}
+	c2Docs, err := s.ListDocumentsForCollection(c2.ID)
+	if err != nil {
+		t.Fatalf("ListDocumentsForCollection(c2): %v", err)
+	}
+
+	c1Doc, ok := c1Docs[c1Path]
+	if !ok {
+		t.Fatalf("missing c1 document %q", c1Path)
+	}
+	c2Doc, ok := c2Docs[c2Path]
+	if !ok {
+		t.Fatalf("missing c2 document %q", c2Path)
+	}
+
+	rawByID, err := s.GetRawContentByDocIDs(c1.ID, []int64{c1Doc.ID, c2Doc.ID})
+	if err != nil {
+		t.Fatalf("GetRawContentByDocIDs: %v", err)
+	}
+
+	if len(rawByID) != 1 {
+		t.Fatalf("expected 1 scoped row, got %d", len(rawByID))
+	}
+	if rawByID[c1Doc.ID] != "c1-raw\n" {
+		t.Fatalf("unexpected raw content for c1 doc: %q", rawByID[c1Doc.ID])
+	}
+	if _, ok := rawByID[c2Doc.ID]; ok {
+		t.Fatalf("unexpected raw content returned for doc outside collection scope")
+	}
+
+	empty, err := s.GetRawContentByDocIDs(c1.ID, nil)
+	if err != nil {
+		t.Fatalf("GetRawContentByDocIDs(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty result for nil ids, got %d", len(empty))
+	}
+}
+
 func mustUpsertDoc(t *testing.T, s *Store, doc DocumentRecord) {
 	t.Helper()
 	err := s.RunInTransaction(func(tx *sql.Tx) error {

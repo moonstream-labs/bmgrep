@@ -15,10 +15,14 @@ type RankOutputOptions struct {
 	Match            MatchInfo
 	ShowTermCoverage bool
 	QueryTermCount   int
+	ShowMeta         bool
+	MetaByPath       map[string]DocMeta
 }
 
 type SampleOutputOptions struct {
-	Match MatchInfo
+	Match      MatchInfo
+	ShowMeta   bool
+	MetaByPath map[string]DocMeta
 }
 
 // FormatRankOutput renders rank-mode output using the documented contract.
@@ -42,6 +46,16 @@ func FormatRankOutputWithOptions(docs []store.RankedDoc, total int, opts RankOut
 			commaFormat(d.Matches), pluralize(d.Matches, "match", "matches"),
 			coverageSuffix,
 		)
+
+		if opts.ShowMeta {
+			meta := opts.MetaByPath[d.Path]
+			if meta.Title != "" {
+				fmt.Fprintf(&b, "    title: %s\n", meta.Title)
+			}
+			if meta.Description != "" {
+				fmt.Fprintf(&b, "    description: %s\n", meta.Description)
+			}
+		}
 	}
 	return b.String()
 }
@@ -96,6 +110,12 @@ func FormatSampleOutputWithOptions(results []SampleResult, total int, opts Sampl
 			b.WriteString("\n")
 		}
 		fmt.Fprintf(&b, "[%d] %s\n", i+1, r.Path)
+		if opts.ShowMeta {
+			meta := opts.MetaByPath[r.Path]
+			if meta.Title != "" {
+				fmt.Fprintf(&b, "    title: %s\n", meta.Title)
+			}
+		}
 
 		for _, w := range r.Windows {
 			fmt.Fprintf(&b, "%d-%d:\n", w.StartLine, w.EndLine)

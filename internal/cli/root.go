@@ -40,6 +40,7 @@ func Execute() error {
 	var flagSamples int
 	var flagRank int
 	var flagMatch string
+	var flagMeta bool
 
 	root := &cobra.Command{
 		Use:   "bmgrep [query terms]",
@@ -50,6 +51,9 @@ Modes:
   Sample (default)  Ranked files with line-numbered excerpt windows.
   Rank (--rank N)   Index-only triage: path, line count, match count.
   --rank cannot be combined with --limit, --lines, or --samples.
+  --meta            Surface title/description from YAML frontmatter
+                    (sample mode shows title only).
+                    source_url is intentionally omitted.
 
 Term matching:
   --match all   Strict all-term match (FTS5 AND).
@@ -96,6 +100,10 @@ new/changed files and remove deleted/ignored ones.`,
 
   # Rank mode: fast triage
   bmgrep "authentication middleware" --rank 5
+
+  # Include frontmatter metadata in output
+  bmgrep "authentication middleware" --rank 5 --meta
+  bmgrep "authentication middleware" -n 2 -l 4 -s 1 --meta
 
   # Match modes
   bmgrep "SkillsBench decomposition" --rank 5 --match all
@@ -211,10 +219,39 @@ new/changed files and remove deleted/ignored ones.`,
 				}
 
 				showCoverage = effectiveMode == search.MatchAny && len(queryTerms) >= 2
+
+				var metaByPath map[string]search.DocMeta
+				if flagMeta && len(docs) > 0 {
+					docIDs := make([]int64, 0, len(docs))
+					for _, d := range docs {
+						docIDs = append(docIDs, d.ID)
+					}
+
+					rawByID, err := app.Store.GetRawContentByDocIDs(collection.ID, docIDs)
+					if err != nil {
+						return fmt.Errorf("load rank metadata: %w", err)
+					}
+
+					metaByPath = make(map[string]search.DocMeta, len(docs))
+					for _, d := range docs {
+						raw, ok := rawByID[d.ID]
+						if !ok {
+							continue
+						}
+						meta := search.ExtractFrontmatter(raw)
+						if meta.Title == "" && meta.Description == "" {
+							continue
+						}
+						metaByPath[d.Path] = meta
+					}
+				}
+
 				out := search.FormatRankOutputWithOptions(docs, total, search.RankOutputOptions{
 					Match:            search.MatchInfo{AutoFallback: autoFallback},
 					ShowTermCoverage: showCoverage,
 					QueryTermCount:   len(queryTerms),
+					ShowMeta:         flagMeta,
+					MetaByPath:       metaByPath,
 				})
 				fmt.Print(out)
 				return nil
@@ -242,16 +279,28 @@ new/changed files and remove deleted/ignored ones.`,
 			}
 
 			results := make([]search.SampleResult, 0, len(docs))
+			var metaByPath map[string]search.DocMeta
+			if flagMeta {
+				metaByPath = make(map[string]search.DocMeta, len(docs))
+			}
 			for _, d := range docs {
 				windows := search.ExtractTopWindows(d.RawContent, queryTerms, weights, flagLines, flagSamples)
 				if len(windows) == 0 {
 					continue
 				}
 				results = append(results, search.SampleResult{Path: d.Path, Windows: windows})
+				if flagMeta {
+					meta := search.ExtractFrontmatter(d.RawContent)
+					if meta.Title != "" {
+						metaByPath[d.Path] = meta
+					}
+				}
 			}
 
 			fmt.Print(search.FormatSampleOutputWithOptions(results, total, search.SampleOutputOptions{
-				Match: search.MatchInfo{AutoFallback: autoFallback},
+				Match:      search.MatchInfo{AutoFallback: autoFallback},
+				ShowMeta:   flagMeta,
+				MetaByPath: metaByPath,
 			}))
 			return nil
 		},
@@ -264,6 +313,7 @@ new/changed files and remove deleted/ignored ones.`,
 	root.Flags().IntVarP(&flagSamples, "samples", "s", defaultSamples, "non-overlapping sample windows per result")
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
 	root.Flags().StringVar(&flagMatch, "match", string(search.MatchAuto), "term matching: all (AND), any (OR), or auto (AND first, OR fallback on zero multi-term hits; prints fallback marker)")
+	root.Flags().BoolVar(&flagMeta, "meta", false, "show frontmatter metadata (rank: title+description, sample: title only; source_url omitted)")
 	root.Flags().StringVar(&flagCollection, "collection", "", "query collection override (non-persistent; also supports BMGREP_COLLECTION)")
 
 	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagDB))

@@ -83,10 +83,11 @@ Flags:
 | `--lines` | `-l` | 4 | Lines per excerpt window |
 | `--samples` | `-s` | 1 | Non-overlapping excerpt windows per document |
 | `--match` |  | `auto` | Term matching mode: `all` (AND), `any` (OR), `auto` (AND first, OR fallback on zero multi-term hits) |
+| `--meta` |  | `false` | Include YAML frontmatter metadata in output (rank: title + description, sample: title only) |
 
 ### Rank mode
 
-Returns an index-only ranked list with line counts and match counts. No source files are read — this is a pure FTS5 index lookup.
+Returns an index-first ranked list with line counts and match counts. By default, rank mode is a pure FTS5 index lookup. With `--meta`, bmgrep also reads frontmatter metadata from stored raw document content for displayed results.
 
 ```
 $ bmgrep "authentication middleware" --rank 5
@@ -98,6 +99,14 @@ results: 5 of 12
 [3] /home/user/reference/docs/session-management.md (234 lines, 2 matches)
 [4] /home/user/reference/docs/api-reference.md (1,509 lines, 2 matches)
 [5] /home/user/reference/docs/migration-guide-v3.md (412 lines, 1 match)
+```
+
+```bash
+# Rank mode with frontmatter metadata
+bmgrep "authentication middleware" --rank 5 --meta
+
+# Sample mode with frontmatter metadata (title only)
+bmgrep "authentication middleware" -n 2 -l 4 -s 1 --meta
 ```
 
 `--rank` is mutually exclusive with `--limit`, `--lines`, and `--samples`.
@@ -196,7 +205,7 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 
 | Layer | Commands | Purpose |
 |---|---|---|
-| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples`, `--match`, `--collection` | Ranked retrieval and excerpt sampling |
+| Query | `bmgrep "query"`, `--rank`, `--limit`, `--lines`, `--samples`, `--match`, `--meta`, `--collection` | Ranked retrieval and excerpt sampling |
 | Collections | `collection create/list/set/rename/delete`, `collection list --json` | Define and select logical search scopes |
 | Source curation | `collection add`, `collection sources`, `collection sources --json`, `collection remove-source` | Curate multi-source collections across filesystem paths |
 | Ignore | `ignore list/path/add/remove` | Manage ignore patterns on the default collection's primary directory source |

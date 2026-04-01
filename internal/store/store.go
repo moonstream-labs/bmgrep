@@ -1124,6 +1124,49 @@ func (s *Store) SearchSampleDocs(collectionID int64, ftsQuery string, limit int)
 	return docs, total, nil
 }
 
+// GetRawContentByDocIDs returns raw content keyed by document ID, scoped to a
+// specific collection.
+func (s *Store) GetRawContentByDocIDs(collectionID int64, docIDs []int64) (map[int64]string, error) {
+	out := make(map[int64]string)
+	if len(docIDs) == 0 {
+		return out, nil
+	}
+
+	docClause := placeholders(len(docIDs))
+	query := fmt.Sprintf(`
+		SELECT id, raw_content
+		FROM documents
+		WHERE collection_id = ?
+		  AND id IN (%s)
+	`, docClause)
+
+	args := make([]any, 0, len(docIDs)+1)
+	args = append(args, collectionID)
+	for _, id := range docIDs {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query raw content by doc ids: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, fmt.Errorf("scan raw content row: %w", err)
+		}
+		out[id] = raw
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate raw content rows: %w", err)
+	}
+
+	return out, nil
+}
+
 func (s *Store) countMatches(collectionID int64, ftsQuery string) (int, error) {
 	_, ftsIdent, _, _, err := collectionSearchIndexIdents(collectionID)
 	if err != nil {
