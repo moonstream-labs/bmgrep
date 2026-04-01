@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/moonstream-labs/bmgrep/internal/ingest"
 	"github.com/moonstream-labs/bmgrep/internal/store"
 )
 
@@ -216,6 +217,54 @@ func TestCollectionSourcesJSONOutput(t *testing.T) {
 	}
 	if !second.Enabled {
 		t.Fatalf("second source expected enabled=true")
+	}
+}
+
+func TestCollectionSourcesJSONOutputNormalizesLegacyDirectoryIgnorePath(t *testing.T) {
+	s := openTestStore(t)
+	defer s.Close()
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "docs")
+	legacyIgnorePath := filepath.Join(rootPath, ".bmgrepignore")
+	collection, err := s.CreateCollection("docs", rootPath, legacyIgnorePath)
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	sources, err := s.ListCollectionSources(collection.ID)
+	if err != nil {
+		t.Fatalf("list collection sources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].IgnoreFilePath != legacyIgnorePath {
+		t.Fatalf("expected legacy ignore file path in store: got %q want %q", sources[0].IgnoreFilePath, legacyIgnorePath)
+	}
+
+	app := &App{Store: s}
+	cmd := newCollectionCmd(app)
+
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"sources", "--json", "docs"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute collection sources --json: %v", err)
+	}
+
+	var got collectionSourcesJSON
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal sources json: %v\noutput=%q", err, stdout.String())
+	}
+	if len(got.Sources) != 1 {
+		t.Fatalf("expected 1 source in json output, got %d", len(got.Sources))
+	}
+
+	want := ingest.DirectoryIgnoreFilePath(rootPath)
+	if got.Sources[0].IgnoreFile != want {
+		t.Fatalf("directory ignore_file mismatch: got %q want %q", got.Sources[0].IgnoreFile, want)
 	}
 }
 

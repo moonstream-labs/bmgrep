@@ -317,11 +317,15 @@ func newCollectionSourcesCmd(app *App, jsonFlag *bool) *cobra.Command {
 					Sources:    make([]collectionSourceJSON, 0, len(sources)),
 				}
 				for _, source := range sources {
+					ignoreFile := source.IgnoreFilePath
+					if source.SourceType == store.SourceTypeDirectory {
+						ignoreFile = ingest.DirectoryIgnoreFilePath(source.SourcePath)
+					}
 					payload.Sources = append(payload.Sources, collectionSourceJSON{
 						ID:         source.ID,
 						Type:       source.SourceType,
 						Path:       source.SourcePath,
-						IgnoreFile: source.IgnoreFilePath,
+						IgnoreFile: ignoreFile,
 						Enabled:    source.Enabled,
 					})
 				}
