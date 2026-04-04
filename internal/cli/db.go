@@ -23,7 +23,17 @@ func newDBCmd(app *App, flagDB *string) *cobra.Command {
 Resolution order:
   --db flag -> BMGREP_DB -> nearest .bmgrep/bmgrep.db -> global default.
 
-Workspace-local state lives in <workspace>/.bmgrep/bmgrep.db.`,
+Workspace-local state lives in <workspace>/.bmgrep/bmgrep.db.
+
+Use db current to inspect active resolution, db doctor for basic health checks,
+and db sources for full source-catalog introspection (optionally with indexed
+document stats).`,
+		Example: strings.TrimSpace(`
+  bmgrep db current
+  bmgrep db doctor
+  bmgrep db sources
+  bmgrep db sources --with-stats --json
+`),
 	}
 
 	dbCmd.AddCommand(
@@ -133,10 +143,19 @@ func newDBSourcesCmd(app *App, flagDB *string, jsonFlag *bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sources",
 		Short: "List configured sources in the active database",
+		Long: `List configured collection sources across the resolved runtime database.
+
+By default, both enabled and disabled sources are shown and sorted by added
+time descending. Use filters to narrow by collection, source type, state, or
+path prefix.
+
+--with-stats adds per-source indexed document counts and latest indexed
+timestamps derived from current document rows.`,
 		Example: strings.TrimSpace(`
   bmgrep db sources
   bmgrep db sources --with-stats
   bmgrep db sources --collection docs --type dir --sort updated --desc
+  bmgrep db sources --disabled --sort path --desc=false
   bmgrep db sources --path-prefix ./reference/docs --with-stats --json
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
