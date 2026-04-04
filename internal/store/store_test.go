@@ -1002,6 +1002,197 @@ func TestSearchSampleDocsUsesTitleWeightedBM25(t *testing.T) {
 	}
 }
 
+func TestListDBSourcesFiltersSortAndPathPrefix(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	c1, err := s.CreateCollection("alpha", filepath.Join(root, "alpha-root"), filepath.Join(root, "alpha-root", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create alpha collection: %v", err)
+	}
+	c2, err := s.CreateCollection("beta", filepath.Join(root, "beta-root"), filepath.Join(root, "beta-root", ".bmignore"))
+	if err != nil {
+		t.Fatalf("create beta collection: %v", err)
+	}
+
+	specialPercentPath := filepath.Join(root, "special%_dir")
+	if _, err := s.AddCollectionSource(c1.ID, SourceTypeDirectory, specialPercentPath, filepath.Join(specialPercentPath, ".bmignore")); err != nil {
+		t.Fatalf("add percent-path source: %v", err)
+	}
+	specialXPath := filepath.Join(root, "specialX_dir")
+	specialXSource, err := s.AddCollectionSource(c1.ID, SourceTypeDirectory, specialXPath, filepath.Join(specialXPath, ".bmignore"))
+	if err != nil {
+		t.Fatalf("add x-path source: %v", err)
+	}
+	betaFilePath := filepath.Join(root, "beta-note.md")
+	betaFileSource, err := s.AddCollectionSource(c2.ID, SourceTypeFile, betaFilePath, "")
+	if err != nil {
+		t.Fatalf("add beta file source: %v", err)
+	}
+
+	if _, err := s.db.Exec(`UPDATE collection_sources SET enabled = 0 WHERE id = ?`, betaFileSource.ID); err != nil {
+		t.Fatalf("disable beta file source: %v", err)
+	}
+
+	if _, err := s.db.Exec(`UPDATE collection_sources SET created_at = ?, updated_at = ? WHERE id = ?`, "2000-01-01 00:00:00", "2000-01-01 00:00:00", specialXSource.ID); err != nil {
+		t.Fatalf("set source timestamp: %v", err)
+	}
+	if _, err := s.db.Exec(`UPDATE collection_sources SET created_at = ?, updated_at = ? WHERE id = ?`, "2099-02-01 00:00:00", "2099-02-01 00:00:00", betaFileSource.ID); err != nil {
+		t.Fatalf("set beta file timestamp: %v", err)
+	}
+
+	rows, err := s.ListDBSources(DBSourceQuery{SortBy: "added", Desc: true})
+	if err != nil {
+		t.Fatalf("ListDBSources: %v", err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("expected 5 sources, got %d", len(rows))
+	}
+	if rows[0].SourceID != betaFileSource.ID {
+		t.Fatalf("expected newest source first by added desc, got source id %d", rows[0].SourceID)
+	}
+
+	disabledRows, err := s.ListDBSources(DBSourceQuery{DisabledOnly: true, SortBy: "path", Desc: false})
+	if err != nil {
+		t.Fatalf("ListDBSources disabled-only: %v", err)
+	}
+	if len(disabledRows) != 1 || disabledRows[0].SourceID != betaFileSource.ID {
+		t.Fatalf("expected only disabled beta file source, got %+v", disabledRows)
+	}
+
+	typedRows, err := s.ListDBSources(DBSourceQuery{CollectionName: c1.Name, SourceType: SourceTypeDirectory, SortBy: "path", Desc: false})
+	if err != nil {
+		t.Fatalf("ListDBSources collection/type filter: %v", err)
+	}
+	if len(typedRows) != 3 {
+		t.Fatalf("expected 3 alpha dir sources, got %d", len(typedRows))
+	}
+
+	prefixRows, err := s.ListDBSources(DBSourceQuery{PathPrefix: specialPercentPath, SortBy: "path", Desc: false})
+	if err != nil {
+		t.Fatalf("ListDBSources path-prefix filter: %v", err)
+	}
+	if len(prefixRows) != 1 {
+		t.Fatalf("expected 1 prefix row for literal %% path, got %d", len(prefixRows))
+	}
+	if prefixRows[0].SourcePath != specialPercentPath {
+		t.Fatalf("expected literal percent path match, got %q", prefixRows[0].SourcePath)
+	}
+}
+
+func TestListDBSourcesWithStats(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	dirRoot := filepath.Join(root, "docs")
+	c, err := s.CreateCollection("docs", dirRoot, filepath.Join(dirRoot, ".bmignore"))
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	fileSourcePath := filepath.Join(root, "single.md")
+	if _, err := s.AddCollectionSource(c.ID, SourceTypeFile, fileSourcePath, ""); err != nil {
+		t.Fatalf("add file source: %v", err)
+	}
+
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(dirRoot, "a.md"),
+		RelPath:      "a.md",
+		FileHash:     "h1",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "alpha\n",
+		CleanContent: "alpha\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         fileSourcePath,
+		RelPath:      "single.md",
+		FileHash:     "h2",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "beta\n",
+		CleanContent: "beta\n",
+	})
+	mustUpsertDoc(t, s, DocumentRecord{
+		CollectionID: c.ID,
+		Path:         filepath.Join(root, "outside.md"),
+		RelPath:      "outside.md",
+		FileHash:     "h3",
+		MTimeNS:      1,
+		SizeBytes:    1,
+		LineCount:    1,
+		RawContent:   "gamma\n",
+		CleanContent: "gamma\n",
+	})
+
+	rows, err := s.ListDBSources(DBSourceQuery{
+		CollectionName: c.Name,
+		SortBy:         "path",
+		Desc:           false,
+		IncludeStats:   true,
+	})
+	if err != nil {
+		t.Fatalf("ListDBSources with stats: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(rows))
+	}
+
+	byPath := make(map[string]DBSourceRow, len(rows))
+	for _, row := range rows {
+		byPath[row.SourcePath] = row
+	}
+
+	dirRow, ok := byPath[dirRoot]
+	if !ok {
+		t.Fatalf("missing dir source row")
+	}
+	if dirRow.IndexedDocs != 1 {
+		t.Fatalf("dir source indexed_docs mismatch: got %d want 1", dirRow.IndexedDocs)
+	}
+	if dirRow.LatestIndexedAt == "" {
+		t.Fatalf("expected dir source latest_indexed_at to be set")
+	}
+
+	fileRow, ok := byPath[fileSourcePath]
+	if !ok {
+		t.Fatalf("missing file source row")
+	}
+	if fileRow.IndexedDocs != 1 {
+		t.Fatalf("file source indexed_docs mismatch: got %d want 1", fileRow.IndexedDocs)
+	}
+	if fileRow.LatestIndexedAt == "" {
+		t.Fatalf("expected file source latest_indexed_at to be set")
+	}
+}
+
+func TestListDBSourcesRejectsInvalidSort(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.ListDBSources(DBSourceQuery{SortBy: "nope"}); err == nil {
+		t.Fatalf("expected invalid sort to return error")
+	}
+}
+
 func mustUpsertDoc(t *testing.T, s *Store, doc DocumentRecord) {
 	t.Helper()
 	err := s.RunInTransaction(func(tx *sql.Tx) error {

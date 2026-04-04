@@ -61,6 +61,33 @@ type CollectionSource struct {
 	Enabled        bool
 }
 
+// DBSourceQuery controls source-catalog introspection across the active DB.
+type DBSourceQuery struct {
+	CollectionName string
+	SourceType     string
+	EnabledOnly    bool
+	DisabledOnly   bool
+	PathPrefix     string
+	SortBy         string
+	Desc           bool
+	IncludeStats   bool
+}
+
+// DBSourceRow is a denormalized source record for DB-level introspection.
+type DBSourceRow struct {
+	SourceID        int64
+	CollectionID    int64
+	CollectionName  string
+	SourceType      string
+	SourcePath      string
+	IgnoreFilePath  string
+	Enabled         bool
+	CreatedAt       string
+	UpdatedAt       string
+	IndexedDocs     int64
+	LatestIndexedAt string
+}
+
 // DocumentRecord tracks on-disk metadata and index payload for one file.
 type DocumentRecord struct {
 	ID           int64
@@ -922,6 +949,257 @@ func (s *Store) RemoveCollectionSourceByPath(collectionID int64, sourcePath stri
 		return CollectionSource{}, err
 	}
 	return removed, nil
+}
+
+// ListDBSources returns sources across all collections with optional filtering,
+// sorting, and per-source indexed document stats.
+func (s *Store) ListDBSources(q DBSourceQuery) ([]DBSourceRow, error) {
+	if q.EnabledOnly && q.DisabledOnly {
+		return nil, fmt.Errorf("enabled-only and disabled-only filters are mutually exclusive")
+	}
+	if q.SourceType != "" && q.SourceType != SourceTypeDirectory && q.SourceType != SourceTypeFile {
+		return nil, fmt.Errorf("invalid source type %q", q.SourceType)
+	}
+
+	where := make([]string, 0, 6)
+	args := make([]any, 0, 10)
+
+	if strings.TrimSpace(q.CollectionName) != "" {
+		where = append(where, "c.name = ?")
+		args = append(args, strings.TrimSpace(q.CollectionName))
+	}
+	if strings.TrimSpace(q.SourceType) != "" {
+		where = append(where, "cs.source_type = ?")
+		args = append(args, strings.TrimSpace(q.SourceType))
+	}
+	if q.EnabledOnly {
+		where = append(where, "cs.enabled = 1")
+	}
+	if q.DisabledOnly {
+		where = append(where, "cs.enabled = 0")
+	}
+	if strings.TrimSpace(q.PathPrefix) != "" {
+		prefix := strings.TrimSpace(q.PathPrefix)
+		where = append(where, pathPrefixPredicateSQL("cs.source_path"))
+		args = append(args, prefix, prefix, prefix, prefix)
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	orderBy, err := dbSourceOrderClause(q.SortBy, q.Desc, q.IncludeStats)
+	if err != nil {
+		return nil, err
+	}
+
+	if !q.IncludeStats {
+		query := fmt.Sprintf(`
+			SELECT
+				cs.id,
+				cs.collection_id,
+				c.name,
+				cs.source_type,
+				cs.source_path,
+				COALESCE(cs.ignore_file_path, ''),
+				cs.enabled,
+				cs.created_at,
+				cs.updated_at
+			FROM collection_sources cs
+			JOIN collections c ON c.id = cs.collection_id
+			%s
+			ORDER BY %s
+		`, whereClause, orderBy)
+
+		rows, err := s.db.Query(query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("list db sources: %w", err)
+		}
+		defer rows.Close()
+
+		out := make([]DBSourceRow, 0)
+		for rows.Next() {
+			var (
+				row     DBSourceRow
+				enabled int
+			)
+			if err := rows.Scan(
+				&row.SourceID,
+				&row.CollectionID,
+				&row.CollectionName,
+				&row.SourceType,
+				&row.SourcePath,
+				&row.IgnoreFilePath,
+				&enabled,
+				&row.CreatedAt,
+				&row.UpdatedAt,
+			); err != nil {
+				return nil, fmt.Errorf("scan db source row: %w", err)
+			}
+			row.Enabled = enabled != 0
+			out = append(out, row)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate db source rows: %w", err)
+		}
+
+		return out, nil
+	}
+
+	query := fmt.Sprintf(`
+		WITH filtered_sources AS (
+			SELECT
+				cs.id,
+				cs.collection_id,
+				c.name AS collection_name,
+				cs.source_type,
+				cs.source_path,
+				COALESCE(cs.ignore_file_path, '') AS ignore_file_path,
+				cs.enabled,
+				cs.created_at,
+				cs.updated_at
+			FROM collection_sources cs
+			JOIN collections c ON c.id = cs.collection_id
+			%s
+		),
+		source_document_map AS (
+			SELECT
+				fs.id AS source_id,
+				d.id AS document_id,
+				d.updated_at AS document_updated_at
+			FROM filtered_sources fs
+			LEFT JOIN documents d
+				ON d.collection_id = fs.collection_id
+				AND %s
+		)
+		SELECT
+			fs.id,
+			fs.collection_id,
+			fs.collection_name,
+			fs.source_type,
+			fs.source_path,
+			fs.ignore_file_path,
+			fs.enabled,
+			fs.created_at,
+			fs.updated_at,
+			COUNT(sdm.document_id) AS indexed_docs,
+			COALESCE(MAX(sdm.document_updated_at), '') AS latest_indexed_at
+		FROM filtered_sources fs
+		LEFT JOIN source_document_map sdm ON sdm.source_id = fs.id
+		GROUP BY
+			fs.id,
+			fs.collection_id,
+			fs.collection_name,
+			fs.source_type,
+			fs.source_path,
+			fs.ignore_file_path,
+			fs.enabled,
+			fs.created_at,
+			fs.updated_at
+		ORDER BY %s
+	`, whereClause, sourceCoversDocumentPredicateSQL("d.path", "fs.source_path", "fs.source_type"), orderBy)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list db sources with stats: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]DBSourceRow, 0)
+	for rows.Next() {
+		var (
+			row     DBSourceRow
+			enabled int
+		)
+		if err := rows.Scan(
+			&row.SourceID,
+			&row.CollectionID,
+			&row.CollectionName,
+			&row.SourceType,
+			&row.SourcePath,
+			&row.IgnoreFilePath,
+			&enabled,
+			&row.CreatedAt,
+			&row.UpdatedAt,
+			&row.IndexedDocs,
+			&row.LatestIndexedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan db source row with stats: %w", err)
+		}
+		row.Enabled = enabled != 0
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate db source rows with stats: %w", err)
+	}
+
+	return out, nil
+}
+
+func pathPrefixPredicateSQL(column string) string {
+	return fmt.Sprintf(`(%s = ? OR (LENGTH(%s) > LENGTH(?) AND SUBSTR(%s, 1, LENGTH(?) + 1) = ? || '/'))`, column, column, column)
+}
+
+func sourceCoversDocumentPredicateSQL(docPathColumn, sourcePathColumn, sourceTypeColumn string) string {
+	return fmt.Sprintf(`(
+		(%s = '%s' AND %s = %s)
+		OR
+		(
+			%s = '%s'
+			AND (
+				%s = %s
+				OR (
+					LENGTH(%s) > LENGTH(%s)
+					AND SUBSTR(%s, 1, LENGTH(%s) + 1) = %s || '/'
+				)
+			)
+		)
+	)`,
+		sourceTypeColumn, SourceTypeFile, docPathColumn, sourcePathColumn,
+		sourceTypeColumn, SourceTypeDirectory,
+		docPathColumn, sourcePathColumn,
+		docPathColumn, sourcePathColumn,
+		docPathColumn, sourcePathColumn, sourcePathColumn,
+	)
+}
+
+func dbSourceOrderClause(sortBy string, desc bool, withStats bool) (string, error) {
+	sortBy = strings.ToLower(strings.TrimSpace(sortBy))
+	if sortBy == "" {
+		sortBy = "added"
+	}
+
+	direction := "ASC"
+	if desc {
+		direction = "DESC"
+	}
+
+	createdCol := "cs.created_at"
+	updatedCol := "cs.updated_at"
+	collectionCol := "c.name"
+	pathCol := "cs.source_path"
+	idCol := "cs.id"
+	if withStats {
+		createdCol = "fs.created_at"
+		updatedCol = "fs.updated_at"
+		collectionCol = "fs.collection_name"
+		pathCol = "fs.source_path"
+		idCol = "fs.id"
+	}
+
+	switch sortBy {
+	case "added":
+		return fmt.Sprintf("%s %s, %s ASC", createdCol, direction, idCol), nil
+	case "updated":
+		return fmt.Sprintf("%s %s, %s ASC", updatedCol, direction, idCol), nil
+	case "collection":
+		return fmt.Sprintf("%s %s, %s ASC", collectionCol, direction, idCol), nil
+	case "path":
+		return fmt.Sprintf("%s %s, %s ASC", pathCol, direction, idCol), nil
+	default:
+		return "", fmt.Errorf("invalid sort %q (expected: added, updated, collection, path)", sortBy)
+	}
 }
 
 func boolToInt(v bool) int {
