@@ -10,6 +10,9 @@ dist/
 .bmgrep/
 .tmp/
 .tmp*/
+archive/
+inbox/
+upcoming/
 *.db
 *.db-shm
 *.db-wal
@@ -24,4 +27,3 @@ coverage.out
 Thumbs.db
 *.swp
 *.swo
-

@@ -96,6 +96,14 @@ func newDBCurrentCmd(app *App, flagDB *string, jsonFlag *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
 		Short: "Show active database path and resolution source",
+		Long: `Inspect the active runtime database resolution for the current invocation.
+
+Human-readable output prints db path, resolution source, and workspace (if any).
+With --json, the payload includes:
+  - cwd       current working directory
+  - db_path   resolved database path
+  - db_source resolution origin (flag/env/workspace/default)
+  - workspace resolved workspace root when workspace-based resolution applies.`,
 		Example: strings.TrimSpace(`
   bmgrep db current
   bmgrep db current --db /tmp/bmgrep.db

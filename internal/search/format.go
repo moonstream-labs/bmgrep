@@ -17,12 +17,14 @@ type RankOutputOptions struct {
 	QueryTermCount   int
 	ShowMeta         bool
 	MetaByPath       map[string]DocMeta
+	DisplayPath      func(string) string
 }
 
 type SampleOutputOptions struct {
-	Match      MatchInfo
-	ShowMeta   bool
-	MetaByPath map[string]DocMeta
+	Match       MatchInfo
+	ShowMeta    bool
+	MetaByPath  map[string]DocMeta
+	DisplayPath func(string) string
 }
 
 // FormatRankOutput renders rank-mode output using the documented contract.
@@ -35,13 +37,17 @@ func FormatRankOutputWithOptions(docs []store.RankedDoc, total int, opts RankOut
 	var b strings.Builder
 	writeResultsHeader(&b, len(docs), total, opts.Match.AutoFallback)
 	for i, d := range docs {
+		displayPath := d.Path
+		if opts.DisplayPath != nil {
+			displayPath = opts.DisplayPath(d.Path)
+		}
 		coverageSuffix := ""
 		if opts.ShowTermCoverage && opts.QueryTermCount > 0 {
 			coverageSuffix = fmt.Sprintf(", %d/%d %s", d.MatchedTerms, opts.QueryTermCount, pluralize(opts.QueryTermCount, "term", "terms"))
 		}
 
 		fmt.Fprintf(&b, "[%d] %s (%s %s, %s %s%s)\n",
-			i+1, d.Path,
+			i+1, displayPath,
 			commaFormat(d.LineCount), pluralize(d.LineCount, "line", "lines"),
 			commaFormat(d.Matches), pluralize(d.Matches, "match", "matches"),
 			coverageSuffix,
@@ -109,10 +115,14 @@ func FormatSampleOutputWithOptions(results []SampleResult, total int, opts Sampl
 	writeResultsHeader(&b, len(results), total, opts.Match.AutoFallback)
 
 	for i, r := range results {
+		displayPath := r.Path
+		if opts.DisplayPath != nil {
+			displayPath = opts.DisplayPath(r.Path)
+		}
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "[%d] %s\n", i+1, r.Path)
+		fmt.Fprintf(&b, "[%d] %s\n", i+1, displayPath)
 		if opts.ShowMeta {
 			meta := opts.MetaByPath[r.Path]
 			if meta.Title != "" {

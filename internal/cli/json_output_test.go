@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -37,6 +38,9 @@ func TestCollectionListJSONOutputEmpty(t *testing.T) {
 	}
 	if got.Collections == nil {
 		t.Fatalf("expected collections to be [], got null")
+	}
+	if got.CWD == "" {
+		t.Fatalf("expected cwd to be populated in list json output")
 	}
 	if len(got.Collections) != 0 {
 		t.Fatalf("expected 0 collections, got %d", len(got.Collections))
@@ -117,6 +121,9 @@ func TestCollectionListJSONOutputValues(t *testing.T) {
 	if len(got.Collections) != 2 {
 		t.Fatalf("expected 2 collections, got %d", len(got.Collections))
 	}
+	if got.CWD == "" {
+		t.Fatalf("expected cwd to be populated in list json output")
+	}
 
 	byName := make(map[string]collectionSummaryJSON, len(got.Collections))
 	for _, collection := range got.Collections {
@@ -186,6 +193,9 @@ func TestCollectionSourcesJSONOutput(t *testing.T) {
 	}
 	if got.Collection != "docs" {
 		t.Fatalf("collection mismatch: got %q want docs", got.Collection)
+	}
+	if got.CWD == "" {
+		t.Fatalf("expected cwd to be populated in sources json output")
 	}
 	if len(got.Sources) != 2 {
 		t.Fatalf("expected 2 sources, got %d", len(got.Sources))
@@ -261,6 +271,9 @@ func TestCollectionSourcesJSONOutputNormalizesLegacyDirectoryIgnorePath(t *testi
 	if len(got.Sources) != 1 {
 		t.Fatalf("expected 1 source in json output, got %d", len(got.Sources))
 	}
+	if got.CWD == "" {
+		t.Fatalf("expected cwd to be populated in sources json output")
+	}
 
 	want := ingest.DirectoryIgnoreFilePath(rootPath)
 	if got.Sources[0].IgnoreFile != want {
@@ -309,6 +322,9 @@ func TestCollectionSourcesJSONOutputEmpty(t *testing.T) {
 	if got.Sources == nil {
 		t.Fatalf("expected sources to be [], got null")
 	}
+	if got.CWD == "" {
+		t.Fatalf("expected cwd to be populated in sources json output")
+	}
 	if len(got.Sources) != 0 {
 		t.Fatalf("expected 0 sources, got %d", len(got.Sources))
 	}
@@ -336,6 +352,13 @@ func TestDBCurrentJSONOutput(t *testing.T) {
 	}
 	if got.DBSource != dbSourceFlag {
 		t.Fatalf("db_source mismatch: got %q want %q", got.DBSource, dbSourceFlag)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if got.CWD != wd {
+		t.Fatalf("cwd mismatch: got %q want %q", got.CWD, wd)
 	}
 	if got.Workspace != "" {
 		t.Fatalf("workspace mismatch: got %q want empty", got.Workspace)

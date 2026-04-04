@@ -22,15 +22,25 @@ const (
 
 // App holds runtime dependencies resolved from flags and environment.
 type App struct {
-	DBPath    string
-	DBFrom    string
-	Workspace string
-	Store     *store.Store
+	DBPath        string
+	DBFrom        string
+	Workspace     string
+	CWD           string
+	AbsolutePaths bool
+	Store         *store.Store
 }
 
 // Execute builds the root command and runs it.
 func Execute() error {
-	app := &App{}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+
+	app := &App{
+		CWD:           cwd,
+		AbsolutePaths: parseAbsolutePathsEnv(os.Getenv("BMGREP_ABSOLUTE_PATHS")),
+	}
 
 	var flagDB string
 	var flagCollection string
@@ -41,6 +51,7 @@ func Execute() error {
 	var flagRank int
 	var flagMatch string
 	var flagMeta bool
+	flagAbsolute := app.AbsolutePaths
 
 	root := &cobra.Command{
 		Use:   "bmgrep [query terms]",
@@ -93,6 +104,11 @@ Collection resolution:
   Query target collection is resolved by precedence:
   --collection -> BMGREP_COLLECTION -> persistent default in the database.
 
+Path display:
+  By default, paths under the current working directory are rendered as
+  ./relative paths. Use --absolute (or BMGREP_ABSOLUTE_PATHS=1) to keep
+  absolute paths everywhere.
+
 Before every search, bmgrep reconciles the active target collection to ingest
 new/changed files and remove deleted/ignored ones.`,
 		Example: strings.TrimSpace(`
@@ -121,9 +137,12 @@ new/changed files and remove deleted/ignored ones.`,
   # Initialize workspace-local state and inspect active runtime paths
   bmgrep db init
   bmgrep db current
+  bmgrep db sources --with-stats
 `),
 		Args: cobra.ArbitraryArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			app.AbsolutePaths = flagAbsolute
+
 			if !needsRuntime(cmd) {
 				return nil
 			}
@@ -253,6 +272,7 @@ new/changed files and remove deleted/ignored ones.`,
 					QueryTermCount:   len(queryTerms),
 					ShowMeta:         flagMeta,
 					MetaByPath:       metaByPath,
+					DisplayPath:      app.displayPath,
 				})
 				fmt.Print(out)
 				return nil
@@ -307,9 +327,10 @@ new/changed files and remove deleted/ignored ones.`,
 			}
 
 			fmt.Print(search.FormatSampleOutputWithOptions(results, total, search.SampleOutputOptions{
-				Match:      search.MatchInfo{AutoFallback: autoFallback},
-				ShowMeta:   flagMeta,
-				MetaByPath: metaByPath,
+				Match:       search.MatchInfo{AutoFallback: autoFallback},
+				ShowMeta:    flagMeta,
+				MetaByPath:  metaByPath,
+				DisplayPath: app.displayPath,
 			}))
 			return nil
 		},
@@ -323,6 +344,7 @@ new/changed files and remove deleted/ignored ones.`,
 	root.Flags().IntVar(&flagRank, "rank", 0, "rank mode: show top N documents without excerpts")
 	root.Flags().StringVar(&flagMatch, "match", string(search.MatchAuto), "term matching: all (AND), any (OR), or auto (AND first, OR fallback on zero multi-term hits; prints fallback marker)")
 	root.Flags().BoolVar(&flagMeta, "meta", false, "show frontmatter metadata (rank: title+description+backlinks, sample: title+backlinks; source_url omitted)")
+	root.PersistentFlags().BoolVar(&flagAbsolute, "absolute", flagAbsolute, "display absolute paths in output (also BMGREP_ABSOLUTE_PATHS=1)")
 	root.Flags().StringVar(&flagCollection, "collection", "", "query collection override (non-persistent; also supports BMGREP_COLLECTION)")
 
 	root.AddCommand(newCollectionCmd(app), newIgnoreCmd(app), newDBCmd(app, &flagDB))

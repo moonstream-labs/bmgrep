@@ -84,6 +84,7 @@ Flags:
 | `--samples` | `-s` | 1 | Non-overlapping excerpt windows per document |
 | `--match` |  | `auto` | Term matching mode: `all` (AND), `any` (OR), `auto` (AND first, OR fallback on zero multi-term hits) |
 | `--meta` |  | `false` | Include YAML frontmatter metadata in output (rank: title + description + backlinks, sample: title + backlinks) |
+| `--absolute` |  | `false` | Render absolute paths in output instead of `./`-relative display for files under current working directory |
 
 ### Rank mode
 
@@ -209,7 +210,7 @@ results: 0 of 0   → Terms not in corpus, reformulate with different vocabulary
 | Collections | `collection create/list/set/rename/delete`, `collection list --json` | Define and select logical search scopes |
 | Source curation | `collection add`, `collection sources`, `collection sources --json`, `collection remove-source` | Curate multi-source collections across filesystem paths |
 | Ignore | `ignore list/path/add/remove` | Manage ignore patterns on the default collection's primary directory source |
-| Database | `db init/current/doctor`, `db current --json` | Initialize workspace DBs, inspect resolution, and validate DB health |
+| Database | `db init/current/doctor/sources`, `db current --json`, `db sources --json` | Initialize workspace DBs, inspect resolution, validate DB health, and introspect configured sources |
 
 ## Collection management
 
@@ -260,7 +261,18 @@ bmgrep collection sources docs-v2 --json
 
 # Resolve active runtime database path/source/workspace
 bmgrep db current --json
+
+# List all configured sources in active DB
+bmgrep db sources
+bmgrep db sources --with-stats --json
+
+# Filter source catalog views
+bmgrep db sources --collection dev1-admin --type dir
+bmgrep db sources --disabled --sort path --desc=false
+bmgrep db sources --path-prefix ./reference/docs --with-stats
 ```
+
+JSON payloads include a top-level `cwd` field. Path fields are rendered relative to the current working directory when possible (same as human-readable output). Use `--absolute` or `BMGREP_ABSOLUTE_PATHS=1` to force absolute paths.
 
 When `--json` is set, bmgrep writes a single JSON object to stdout. Errors still go to stderr.
 

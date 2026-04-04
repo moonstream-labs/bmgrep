@@ -128,6 +128,47 @@ func TestFormatSampleOutputWithFallback(t *testing.T) {
 	}
 }
 
+func TestFormatRankOutputWithDisplayPathTransform(t *testing.T) {
+	out := FormatRankOutputWithOptions(
+		[]store.RankedDoc{{Path: "/tmp/a.md", LineCount: 10, Matches: 3}},
+		1,
+		RankOutputOptions{
+			DisplayPath: func(p string) string {
+				if p == "/tmp/a.md" {
+					return "./a.md"
+				}
+				return p
+			},
+		},
+	)
+
+	if !strings.Contains(out, "[1] ./a.md (10 lines, 3 matches)") {
+		t.Fatalf("expected transformed rank path: %q", out)
+	}
+}
+
+func TestFormatSampleOutputWithDisplayPathTransform(t *testing.T) {
+	out := FormatSampleOutputWithOptions(
+		[]SampleResult{{
+			Path:    "/tmp/a.md",
+			Windows: []SampleWindow{{StartLine: 1, EndLine: 1, Lines: []string{"alpha"}}},
+		}},
+		1,
+		SampleOutputOptions{
+			DisplayPath: func(p string) string {
+				if p == "/tmp/a.md" {
+					return "./a.md"
+				}
+				return p
+			},
+		},
+	)
+
+	if !strings.Contains(out, "[1] ./a.md") {
+		t.Fatalf("expected transformed sample path: %q", out)
+	}
+}
+
 func TestFormatRankOutputWithMeta(t *testing.T) {
 	out := FormatRankOutputWithOptions(
 		[]store.RankedDoc{{Path: "/tmp/a.md", LineCount: 10, Matches: 3}},

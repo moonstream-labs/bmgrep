@@ -84,7 +84,7 @@ func newIgnorePathCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(ignorePath)
+			fmt.Println(app.displayPath(ignorePath))
 			return nil
 		},
 	}

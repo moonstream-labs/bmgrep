@@ -61,12 +61,13 @@ func newCollectionListCmd(app *App, jsonFlag *bool) *cobra.Command {
 
 			if *jsonFlag {
 				payload := collectionListJSON{
+					CWD:         app.cwd(),
 					Collections: make([]collectionSummaryJSON, 0, len(collections)),
 				}
 				for _, collection := range collections {
 					payload.Collections = append(payload.Collections, collectionSummaryJSON{
 						Name:          collection.Name,
-						RootPath:      collection.RootPath,
+						RootPath:      app.displayPath(collection.RootPath),
 						DocumentCount: collection.Documents,
 						IsDefault:     collection.IsDefault,
 					})
@@ -85,7 +86,7 @@ func newCollectionListCmd(app *App, jsonFlag *bool) *cobra.Command {
 					marker = "*"
 				}
 				fmt.Printf("%s %s (%d docs)\n", marker, c.Name, c.Documents)
-				fmt.Printf("  path: %s\n", c.RootPath)
+				fmt.Printf("  path: %s\n", app.displayPath(c.RootPath))
 			}
 			return nil
 		},
@@ -137,8 +138,8 @@ ensure .bmignore exists, and index all non-ignored .md files.`,
 			}
 
 			fmt.Printf("Created collection %q\n", collection.Name)
-			fmt.Printf("root: %s\n", collection.RootPath)
-			fmt.Printf("ignore: %s\n", ingest.DirectoryIgnoreFilePath(collection.RootPath))
+			fmt.Printf("root: %s\n", app.displayPath(collection.RootPath))
+			fmt.Printf("ignore: %s\n", app.displayPath(ingest.DirectoryIgnoreFilePath(collection.RootPath)))
 			fmt.Printf("indexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 
 			if _, err := app.Store.GetDefaultCollection(); err != nil {
@@ -262,11 +263,11 @@ Exactly one of --dir or --file is required.`,
 			}
 
 			fmt.Printf("Added %s source to collection %q\n", source.SourceType, collection.Name)
-			fmt.Printf("source[%d]: %s\n", source.ID, source.SourcePath)
+			fmt.Printf("source[%d]: %s\n", source.ID, app.displayPath(source.SourcePath))
 			if source.SourceType == store.SourceTypeDirectory {
-				fmt.Printf("ignore: %s\n", ingest.DirectoryIgnoreFilePath(source.SourcePath))
+				fmt.Printf("ignore: %s\n", app.displayPath(ingest.DirectoryIgnoreFilePath(source.SourcePath)))
 			} else if strings.TrimSpace(source.IgnoreFilePath) != "" {
-				fmt.Printf("ignore: %s\n", source.IgnoreFilePath)
+				fmt.Printf("ignore: %s\n", app.displayPath(source.IgnoreFilePath))
 			}
 			fmt.Printf("reindexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 			return nil
@@ -313,6 +314,7 @@ func newCollectionSourcesCmd(app *App, jsonFlag *bool) *cobra.Command {
 
 			if *jsonFlag {
 				payload := collectionSourcesJSON{
+					CWD:        app.cwd(),
 					Collection: collection.Name,
 					Sources:    make([]collectionSourceJSON, 0, len(sources)),
 				}
@@ -324,8 +326,8 @@ func newCollectionSourcesCmd(app *App, jsonFlag *bool) *cobra.Command {
 					payload.Sources = append(payload.Sources, collectionSourceJSON{
 						ID:         source.ID,
 						Type:       source.SourceType,
-						Path:       source.SourcePath,
-						IgnoreFile: ignoreFile,
+						Path:       app.displayPath(source.SourcePath),
+						IgnoreFile: app.displayPath(ignoreFile),
 						Enabled:    source.Enabled,
 					})
 				}
@@ -343,11 +345,11 @@ func newCollectionSourcesCmd(app *App, jsonFlag *bool) *cobra.Command {
 				if !source.Enabled {
 					state = "disabled"
 				}
-				fmt.Printf("  [%d] %s (%s)\n", source.ID, source.SourcePath, source.SourceType)
+				fmt.Printf("  [%d] %s (%s)\n", source.ID, app.displayPath(source.SourcePath), source.SourceType)
 				if source.SourceType == store.SourceTypeDirectory {
-					fmt.Printf("       ignore: %s\n", ingest.DirectoryIgnoreFilePath(source.SourcePath))
+					fmt.Printf("       ignore: %s\n", app.displayPath(ingest.DirectoryIgnoreFilePath(source.SourcePath)))
 				} else if source.IgnoreFilePath != "" {
-					fmt.Printf("       ignore: %s\n", source.IgnoreFilePath)
+					fmt.Printf("       ignore: %s\n", app.displayPath(source.IgnoreFilePath))
 				}
 				fmt.Printf("       state: %s\n", state)
 			}
@@ -413,7 +415,7 @@ func newCollectionRemoveSourceCmd(app *App) *cobra.Command {
 			}
 
 			fmt.Printf("Removed source[%d] from collection %q\n", removed.ID, collection.Name)
-			fmt.Printf("source: %s (%s)\n", removed.SourcePath, removed.SourceType)
+			fmt.Printf("source: %s (%s)\n", app.displayPath(removed.SourcePath), removed.SourceType)
 			fmt.Printf("reindexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 			return nil
 		},
