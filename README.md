@@ -252,7 +252,7 @@ bmgrep collection delete old-docs
 Use `--json` on state-inspection commands when another tool needs to consume bmgrep output programmatically.
 
 ```bash
-# List collections with root_path, document_count, and default marker
+# List collections with source_count, document_count, and default marker
 bmgrep collection list --json
 
 # List configured sources for a collection (id/type/path/ignore_file/enabled)

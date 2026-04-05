@@ -134,8 +134,11 @@ func TestCollectionListJSONOutputValues(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing alpha collection in json output")
 	}
-	if alphaJSON.RootPath != alphaRoot {
-		t.Fatalf("alpha root_path mismatch: got %q want %q", alphaJSON.RootPath, alphaRoot)
+	if alphaJSON.SourceCount != 1 {
+		t.Fatalf("alpha source_count mismatch: got %d want 1", alphaJSON.SourceCount)
+	}
+	if alphaJSON.SourcePath != alphaRoot {
+		t.Fatalf("alpha source_path mismatch: got %q want %q", alphaJSON.SourcePath, alphaRoot)
 	}
 	if alphaJSON.DocumentCount != 1 {
 		t.Fatalf("alpha document_count mismatch: got %d want 1", alphaJSON.DocumentCount)
@@ -148,8 +151,11 @@ func TestCollectionListJSONOutputValues(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing beta collection in json output")
 	}
-	if betaJSON.RootPath != betaRoot {
-		t.Fatalf("beta root_path mismatch: got %q want %q", betaJSON.RootPath, betaRoot)
+	if betaJSON.SourceCount != 1 {
+		t.Fatalf("beta source_count mismatch: got %d want 1", betaJSON.SourceCount)
+	}
+	if betaJSON.SourcePath != betaRoot {
+		t.Fatalf("beta source_path mismatch: got %q want %q", betaJSON.SourcePath, betaRoot)
 	}
 	if betaJSON.DocumentCount != 2 {
 		t.Fatalf("beta document_count mismatch: got %d want 2", betaJSON.DocumentCount)

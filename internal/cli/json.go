@@ -12,7 +12,8 @@ type collectionListJSON struct {
 
 type collectionSummaryJSON struct {
 	Name          string `json:"name"`
-	RootPath      string `json:"root_path"`
+	SourceCount   int64  `json:"source_count"`
+	SourcePath    string `json:"source_path,omitempty"`
 	DocumentCount int64  `json:"document_count"`
 	IsDefault     bool   `json:"is_default"`
 }

@@ -223,6 +223,122 @@ func TestCollectionSourceLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateCollectionWithoutPath(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	c, err := s.CreateCollection("scratch", "", "")
+	if err != nil {
+		t.Fatalf("create pathless collection: %v", err)
+	}
+	if c.Name != "scratch" {
+		t.Fatalf("name mismatch: got %q", c.Name)
+	}
+	if c.RootPath != "" {
+		t.Fatalf("expected empty root_path, got %q", c.RootPath)
+	}
+
+	sources, err := s.ListCollectionSources(c.ID)
+	if err != nil {
+		t.Fatalf("list sources: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("expected 0 sources for pathless collection, got %d", len(sources))
+	}
+
+	summaries, err := s.ListCollections()
+	if err != nil {
+		t.Fatalf("list collections: %v", err)
+	}
+	var found CollectionSummary
+	for _, cs := range summaries {
+		if cs.Name == "scratch" {
+			found = cs
+		}
+	}
+	if found.SourceCount != 0 {
+		t.Fatalf("expected source_count 0, got %d", found.SourceCount)
+	}
+	if found.SourcePath != "" {
+		t.Fatalf("expected empty source_path, got %q", found.SourcePath)
+	}
+
+	// Close and reopen to verify migration does not backfill empty-path sources.
+	s.Close()
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer s2.Close()
+
+	sources2, err := s2.ListCollectionSources(c.ID)
+	if err != nil {
+		t.Fatalf("list sources after reopen: %v", err)
+	}
+	if len(sources2) != 0 {
+		t.Fatalf("migration backfilled spurious sources: got %d", len(sources2))
+	}
+}
+
+func TestGetCollectionSourceByPath(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	root := t.TempDir()
+	dirPath := filepath.Join(root, "docs")
+	ignorePath := filepath.Join(dirPath, ".bmignore")
+	c, err := s.CreateCollection("test", dirPath, ignorePath)
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	// Look up the initial directory source by path.
+	source, err := s.GetCollectionSourceByPath(c.ID, dirPath)
+	if err != nil {
+		t.Fatalf("get source by path: %v", err)
+	}
+	if source.SourceType != SourceTypeDirectory {
+		t.Fatalf("expected dir source, got %q", source.SourceType)
+	}
+	if source.SourcePath != dirPath {
+		t.Fatalf("source_path mismatch: got %q want %q", source.SourcePath, dirPath)
+	}
+	if !source.Enabled {
+		t.Fatalf("expected source to be enabled")
+	}
+
+	// Add a file source and look it up.
+	filePath := filepath.Join(root, "note.md")
+	added, err := s.AddCollectionSource(c.ID, SourceTypeFile, filePath, "")
+	if err != nil {
+		t.Fatalf("add file source: %v", err)
+	}
+	fileSource, err := s.GetCollectionSourceByPath(c.ID, filePath)
+	if err != nil {
+		t.Fatalf("get file source by path: %v", err)
+	}
+	if fileSource.ID != added.ID {
+		t.Fatalf("id mismatch: got %d want %d", fileSource.ID, added.ID)
+	}
+	if fileSource.SourceType != SourceTypeFile {
+		t.Fatalf("expected file source, got %q", fileSource.SourceType)
+	}
+
+	// Nonexistent path returns an error.
+	_, err = s.GetCollectionSourceByPath(c.ID, "/nonexistent/path")
+	if err == nil {
+		t.Fatalf("expected error for nonexistent path")
+	}
+}
+
 func TestUpsertAllowsDuplicateRelPathsPerCollection(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "bmgrep.db")
 	s, err := Open(dbPath)

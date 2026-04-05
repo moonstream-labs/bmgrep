@@ -130,9 +130,13 @@ new/changed files and remove deleted/ignored ones.`,
   # Non-persistent collection override for this query
   bmgrep "authentication middleware" --collection docs-v2 --rank 5
 
-  # Create and activate a collection
+  # Create a single-source collection (shorthand)
   bmgrep collection create docs --path /home/user/reference/docs
-  bmgrep collection set docs
+
+  # Create a multi-source collection
+  bmgrep collection create docs
+  bmgrep collection add docs --dir ~/reference/vue
+  bmgrep collection add docs --dir ~/reference/nuxt
 
   # Initialize workspace-local state and inspect active runtime paths
   bmgrep db init

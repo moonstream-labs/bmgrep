@@ -32,18 +32,22 @@ type Store struct {
 
 // Collection is the canonical metadata for a documentation collection.
 type Collection struct {
-	ID             int64
-	Name           string
+	ID   int64
+	Name string
+	// RootPath is the legacy root_path column. Retained for the reconcile
+	// legacy fallback (reconcile.go scanCollectionSources). New code should
+	// not read this field for display or logic.
 	RootPath       string
 	IgnoreFilePath string
 }
 
 // CollectionSummary is used for listing collections with document counts.
 type CollectionSummary struct {
-	Name      string
-	RootPath  string
-	Documents int64
-	IsDefault bool
+	Name        string
+	SourceCount int64
+	SourcePath  string // populated only when SourceCount == 1
+	Documents   int64
+	IsDefault   bool
 }
 
 // ErrNoDefaultCollection indicates the database has no persistent
@@ -329,7 +333,8 @@ func (s *Store) migrateCollectionSourcesFromLegacyRoot() error {
 		INSERT INTO collection_sources(collection_id, source_type, source_path, ignore_file_path, enabled)
 		SELECT c.id, ?, c.root_path, c.ignore_file_path, 1
 		FROM collections c
-		WHERE NOT EXISTS (
+		WHERE c.root_path != ''
+		  AND NOT EXISTS (
 			SELECT 1
 			FROM collection_sources cs
 			WHERE cs.collection_id = c.id
@@ -719,14 +724,16 @@ func (s *Store) CreateCollection(name, rootPath, ignoreFilePath string) (Collect
 		if err := s.EnsureCollectionSearchIndexTx(tx, id); err != nil {
 			return err
 		}
-		if _, err := s.addCollectionSourceTx(tx, CollectionSource{
-			CollectionID:   id,
-			SourceType:     SourceTypeDirectory,
-			SourcePath:     rootPath,
-			IgnoreFilePath: ignoreFilePath,
-			Enabled:        true,
-		}); err != nil {
-			return err
+		if strings.TrimSpace(rootPath) != "" {
+			if _, err := s.addCollectionSourceTx(tx, CollectionSource{
+				CollectionID:   id,
+				SourceType:     SourceTypeDirectory,
+				SourcePath:     rootPath,
+				IgnoreFilePath: ignoreFilePath,
+				Enabled:        true,
+			}); err != nil {
+				return err
+			}
 		}
 
 		out = Collection{ID: id, Name: name, RootPath: rootPath, IgnoreFilePath: ignoreFilePath}
@@ -854,6 +861,33 @@ func (s *Store) PrimaryDirectorySource(collectionID int64) (CollectionSource, er
 			return CollectionSource{}, fmt.Errorf("collection has no directory source")
 		}
 		return CollectionSource{}, fmt.Errorf("get primary directory source: %w", err)
+	}
+	source.Enabled = enabled != 0
+	return source, nil
+}
+
+// GetCollectionSourceByPath looks up a source by its exact filesystem path
+// within a collection.
+func (s *Store) GetCollectionSourceByPath(collectionID int64, sourcePath string) (CollectionSource, error) {
+	var source CollectionSource
+	var enabled int
+	err := s.db.QueryRow(`
+		SELECT id, collection_id, source_type, source_path, COALESCE(ignore_file_path, ''), enabled
+		FROM collection_sources
+		WHERE source_path = ? AND collection_id = ?
+	`, sourcePath, collectionID).Scan(
+		&source.ID,
+		&source.CollectionID,
+		&source.SourceType,
+		&source.SourcePath,
+		&source.IgnoreFilePath,
+		&enabled,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CollectionSource{}, fmt.Errorf("source %q not found in this collection", sourcePath)
+		}
+		return CollectionSource{}, fmt.Errorf("get collection source by path: %w", err)
 	}
 	source.Enabled = enabled != 0
 	return source, nil
@@ -1221,18 +1255,10 @@ func nullIfEmpty(v string) any {
 func (s *Store) ListCollections() ([]CollectionSummary, error) {
 	rows, err := s.db.Query(`
 		SELECT
+			c.id,
 			c.name,
-			COALESCE(
-				(
-					SELECT cs.source_path
-					FROM collection_sources cs
-					WHERE cs.collection_id = c.id
-					  AND cs.source_type = ?
-					ORDER BY cs.id ASC
-					LIMIT 1
-				),
-				c.root_path
-			),
+			(SELECT COUNT(*) FROM collection_sources cs
+			 WHERE cs.collection_id = c.id AND cs.enabled = 1),
 			COUNT(d.id),
 			CASE
 				WHEN c.id = (SELECT default_collection_id FROM app_state WHERE id = 1)
@@ -1240,26 +1266,47 @@ func (s *Store) ListCollections() ([]CollectionSummary, error) {
 			END AS is_default
 		FROM collections c
 		LEFT JOIN documents d ON d.collection_id = c.id
-		GROUP BY c.id, c.name, c.root_path
-		ORDER BY c.name ASC`, SourceTypeDirectory)
+		GROUP BY c.id, c.name
+		ORDER BY c.name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}
 	defer rows.Close()
 
+	type idAndSummary struct {
+		id  int64
+		idx int
+	}
+	var singleSource []idAndSummary
 	var out []CollectionSummary
 	for rows.Next() {
 		var r CollectionSummary
+		var collectionID int64
 		var isDefault int
-		if err := rows.Scan(&r.Name, &r.RootPath, &r.Documents, &isDefault); err != nil {
+		if err := rows.Scan(&collectionID, &r.Name, &r.SourceCount, &r.Documents, &isDefault); err != nil {
 			return nil, fmt.Errorf("scan collection summary: %w", err)
 		}
 		r.IsDefault = isDefault != 0
+		if r.SourceCount == 1 {
+			singleSource = append(singleSource, idAndSummary{id: collectionID, idx: len(out)})
+		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate collection summaries: %w", err)
 	}
+
+	for _, ss := range singleSource {
+		var path string
+		err := s.db.QueryRow(`
+			SELECT cs.source_path FROM collection_sources cs
+			WHERE cs.collection_id = ? AND cs.enabled = 1
+			LIMIT 1`, ss.id).Scan(&path)
+		if err == nil {
+			out[ss.idx].SourcePath = path
+		}
+	}
+
 	return out, nil
 }
 

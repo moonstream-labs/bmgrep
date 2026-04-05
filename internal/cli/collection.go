@@ -24,9 +24,19 @@ func newCollectionCmd(app *App) *cobra.Command {
 		Long: `Collection commands control which markdown sources are indexed
 and which collection is searched by default.
 
-Collections are source sets. Start with collection create --path for an
-initial directory source, then use collection add to curate additional
-directory/file sources from anywhere on disk.`,
+Collections are source sets that aggregate one or more directory and file
+sources. Two workflows:
+
+  Single-source shorthand:
+    bmgrep collection create docs --path ~/reference/docs
+
+  Multi-source (create then compose):
+    bmgrep collection create docs
+    bmgrep collection add docs --dir ~/reference/vue
+    bmgrep collection add docs --dir ~/reference/nuxt
+
+Use collection list to see all collections with source counts, and
+collection sources to inspect individual source paths.`,
 	}
 
 	collectionCmd.AddCommand(
@@ -49,6 +59,12 @@ func newCollectionListCmd(app *App, jsonFlag *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List all collections",
+		Long: `List all collections with document counts.
+
+Single-source collections show the source path inline. Multi-source
+collections show a source count instead — use collection sources to
+see individual paths. Zero-source collections (created without --path)
+show 0 sources.`,
 		Example: strings.TrimSpace(`
   bmgrep collection list
   bmgrep collection list --json
@@ -65,9 +81,14 @@ func newCollectionListCmd(app *App, jsonFlag *bool) *cobra.Command {
 					Collections: make([]collectionSummaryJSON, 0, len(collections)),
 				}
 				for _, collection := range collections {
+					sourcePath := ""
+					if collection.SourcePath != "" {
+						sourcePath = app.displayPath(collection.SourcePath)
+					}
 					payload.Collections = append(payload.Collections, collectionSummaryJSON{
 						Name:          collection.Name,
-						RootPath:      app.displayPath(collection.RootPath),
+						SourceCount:   collection.SourceCount,
+						SourcePath:    sourcePath,
 						DocumentCount: collection.Documents,
 						IsDefault:     collection.IsDefault,
 					})
@@ -85,8 +106,12 @@ func newCollectionListCmd(app *App, jsonFlag *bool) *cobra.Command {
 				if c.IsDefault {
 					marker = "*"
 				}
-				fmt.Printf("%s %s (%d docs)\n", marker, c.Name, c.Documents)
-				fmt.Printf("  path: %s\n", app.displayPath(c.RootPath))
+				if c.SourceCount == 1 && c.SourcePath != "" {
+					fmt.Printf("%s %s (%d docs)\n", marker, c.Name, c.Documents)
+					fmt.Printf("  %s\n", app.displayPath(c.SourcePath))
+				} else {
+					fmt.Printf("%s %s (%d docs, %d sources)\n", marker, c.Name, c.Documents, c.SourceCount)
+				}
 			}
 			return nil
 		},
@@ -98,11 +123,13 @@ func newCollectionCreateCmd(app *App) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create and index a new collection",
-		Long: `Create a collection with an initial directory source at --path,
-ensure .bmignore exists, and index all non-ignored .md files.`,
+		Short: "Create a new collection",
+		Long: `Create a collection. Pass --path to add an initial directory source
+and index it immediately. Omit --path to create an empty collection
+for later source additions via collection add.`,
 		Example: strings.TrimSpace(`
   bmgrep collection create docs --path /home/user/reference/docs
+  bmgrep collection create scratch
 `),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -110,37 +137,44 @@ ensure .bmignore exists, and index all non-ignored .md files.`,
 			if name == "" {
 				return fmt.Errorf("collection name cannot be empty")
 			}
+
+			var collection store.Collection
 			if strings.TrimSpace(flagPath) == "" {
-				return fmt.Errorf("--path is required")
-			}
+				var err error
+				collection, err = app.Store.CreateCollection(name, "", "")
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Created collection %q (no sources; use collection add)\n", collection.Name)
+			} else {
+				root, info, err := resolveSourcePath(flagPath)
+				if err != nil {
+					return err
+				}
+				if !info.IsDir() {
+					return fmt.Errorf("--path must be a directory")
+				}
 
-			root, info, err := resolveSourcePath(flagPath)
-			if err != nil {
-				return err
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("--path must be a directory")
-			}
+				ignorePath, err := ingest.EnsureIgnoreFile(root)
+				if err != nil {
+					return err
+				}
 
-			ignorePath, err := ingest.EnsureIgnoreFile(root)
-			if err != nil {
-				return err
-			}
+				collection, err = app.Store.CreateCollection(name, root, ignorePath)
+				if err != nil {
+					return err
+				}
 
-			collection, err := app.Store.CreateCollection(name, root, ignorePath)
-			if err != nil {
-				return err
-			}
+				stats, err := ingest.ReconcileCollection(app.Store, collection)
+				if err != nil {
+					return err
+				}
 
-			stats, err := ingest.ReconcileCollection(app.Store, collection)
-			if err != nil {
-				return err
+				fmt.Printf("Created collection %q\n", collection.Name)
+				fmt.Printf("root: %s\n", app.displayPath(root))
+				fmt.Printf("ignore: %s\n", app.displayPath(ingest.DirectoryIgnoreFilePath(root)))
+				fmt.Printf("indexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 			}
-
-			fmt.Printf("Created collection %q\n", collection.Name)
-			fmt.Printf("root: %s\n", app.displayPath(collection.RootPath))
-			fmt.Printf("ignore: %s\n", app.displayPath(ingest.DirectoryIgnoreFilePath(collection.RootPath)))
-			fmt.Printf("indexed: +%d ~%d -%d\n", stats.Added, stats.Updated, stats.Deleted)
 
 			if _, err := app.Store.GetDefaultCollection(); err != nil {
 				if !errors.Is(err, store.ErrNoDefaultCollection) {
@@ -156,7 +190,7 @@ ensure .bmignore exists, and index all non-ignored .md files.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&flagPath, "path", "", "initial directory source for markdown files (required)")
+	cmd.Flags().StringVar(&flagPath, "path", "", "initial directory source for markdown files")
 	return cmd
 }
 
@@ -190,9 +224,15 @@ func newCollectionAddSourceCmd(app *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add [collection]",
 		Short: "Add a file or directory source to a collection",
-		Long: `Add a source to a collection. When collection is omitted, bmgrep uses
-BMGREP_COLLECTION, then the persistent default collection.
-Exactly one of --dir or --file is required.`,
+		Long: `Add a directory or file source to a collection, then reindex.
+
+This is the standard way to build multi-source collections:
+  bmgrep collection create docs
+  bmgrep collection add docs --dir ~/reference/vue
+  bmgrep collection add docs --dir ~/reference/nuxt
+
+When collection is omitted, bmgrep uses BMGREP_COLLECTION, then the
+persistent default collection. Exactly one of --dir or --file is required.`,
 		Example: strings.TrimSpace(`
   bmgrep collection add --dir ~/docs/reference
   bmgrep collection add --file ~/notes/agent-patterns.md
